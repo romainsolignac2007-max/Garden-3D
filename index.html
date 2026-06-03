@@ -1122,7 +1122,7 @@ function loadGLBModel(type, callback){
     var cbs=GLB_LOADING[type]||[];
     delete GLB_LOADING[type];
     cbs.forEach(function(cb){if(cb)cb(group.clone(true));});
-  },function(err){
+  },undefined,function(err){
     console.warn('GLB load error for',type,err);
     var cbs=GLB_LOADING[type]||[];
     delete GLB_LOADING[type];
