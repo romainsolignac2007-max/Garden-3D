@@ -1,0 +1,2911 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Garden3D Pro</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ============================================================
+// GLTFLoader inline (Three.js r128 compatible subset)
+// ============================================================
+(function(){
+'use strict';
+var scope=THREE;
+function GLTFLoader(manager){this.manager=manager||scope.DefaultLoadingManager;this.dracoLoader=null;this.ktx2Loader=null;this.meshoptDecoder=null;this.pluginCallbacks=[];}
+GLTFLoader.prototype={constructor:GLTFLoader,
+load:function(url,onLoad,onProgress,onError){
+  var loader=new scope.FileLoader(this.manager);
+  loader.setResponseType('arraybuffer');
+  loader.setRequestHeader(this.requestHeader||{});
+  loader.setWithCredentials(this.withCredentials||false);
+  var self=this;
+  loader.load(url,function(data){try{self.parse(data,url,onLoad,onError);}catch(e){if(onError)onError(e);else console.error(e);}},onProgress,onError);
+},
+loadAsync:function(url,onProgress){var self=this;return new Promise(function(res,rej){self.load(url,res,onProgress,rej);});},
+setDRACOLoader:function(d){this.dracoLoader=d;return this;},
+parse:function(data,path,onLoad,onError){
+  var content,extensions={},plugins={};
+  if(typeof data==='string'){content=data;}
+  else{
+    var magic=scope.LoaderUtils.decodeText(new Uint8Array(data,0,4));
+    if(magic==='glTF'){
+      var header=new Uint32Array(data,0,3);
+      var v=header[1];
+      if(v!==2){if(onError)onError(new Error('Unsupported glTF version'));return;}
+      var jsonChunkLen=header[3]||(new Uint32Array(data,12,1))[0];
+      var jsonChunkType=(new Uint32Array(data,16,1))[0];
+      if(jsonChunkType!==0x4E4F534A){if(onError)onError(new Error('Invalid JSON chunk'));return;}
+      var jsonArr=new Uint8Array(data,20,jsonChunkLen);
+      content=scope.LoaderUtils.decodeText(jsonArr);
+      var binaryChunkOffset=20+jsonChunkLen;
+      if(binaryChunkOffset<data.byteLength){
+        var binLen=(new Uint32Array(data,binaryChunkOffset,1))[0];
+        var binType=(new Uint32Array(data,binaryChunkOffset+4,1))[0];
+        if(binType===0x004E4942){this._binaryChunk=new Uint8Array(data,binaryChunkOffset+8,binLen);}
+      }
+    } else {
+      content=scope.LoaderUtils.decodeText(new Uint8Array(data));
+    }
+  }
+  var json;
+  try{json=JSON.parse(content);}catch(e){if(onError)onError(e);return;}
+  this._json=json;
+  this._path=path;
+  var self=this;
+  this._buildScene(json,onLoad,onError);
+},
+_buildScene:function(json,onLoad,onError){
+  var self=this;
+  var scene=new scope.Group();
+  scene.name=json.scenes&&json.scenes[0]?json.scenes[0].name||'Scene':'Scene';
+  var meshes=json.meshes||[];
+  var accessors=json.accessors||[];
+  var bufferViews=json.bufferViews||[];
+  var bin=this._binaryChunk;
+
+  // ── Palette de couleurs palmier ─────────────────────────
+  // Tronc : brun chaud avec variation lumière/ombre
+  var TRUNK_COLORS=[
+    [0.42,0.28,0.12], // brun chaud principal
+    [0.38,0.24,0.10], // brun foncé (ombre)
+    [0.52,0.34,0.15], // brun clair (lumière)
+    [0.45,0.30,0.13], // brun moyen
+    [0.35,0.22,0.09], // brun très foncé (creux)
+    [0.48,0.32,0.14]  // brun orangé léger
+  ];
+  // Feuilles : verts foncés naturels (palmier réaliste)
+  var LEAF_COLORS=[
+    [0.08,0.28,0.05], // vert très foncé (dessous feuille, ombre)
+    [0.10,0.33,0.06], // vert foncé forêt
+    [0.12,0.38,0.07], // vert foncé principal
+    [0.09,0.30,0.05], // vert presque noir (creux)
+    [0.14,0.40,0.08], // vert moyen foncé
+    [0.11,0.35,0.06], // vert forêt profond
+    [0.13,0.36,0.07]  // vert naturel foncé
+  ];
+  // Zone de transition (base des palmes, pétioles)
+  var PETIOLE_COLORS=[
+    [0.55,0.48,0.20], // beige-vert (pétiole)
+    [0.50,0.42,0.18], // ocre chaud
+    [0.45,0.38,0.15]  // brun-vert
+  ];
+
+  meshes.forEach(function(meshDef){
+    var primitives=meshDef.primitives||[];
+    primitives.forEach(function(prim){
+      var geo=new scope.BufferGeometry();
+      var posArr=null;
+
+      // Positions
+      if(prim.attributes&&prim.attributes.POSITION!==undefined){
+        var acc=accessors[prim.attributes.POSITION];
+        var bv=bufferViews[acc.bufferView];
+        var offset=bv.byteOffset||0;
+        var buf=bin.slice(offset,offset+bv.byteLength);
+        posArr=new Float32Array(buf.buffer,buf.byteOffset,buf.byteLength/4);
+        geo.setAttribute('position',new scope.BufferAttribute(posArr,3));
+      }
+      // UVs
+      if(prim.attributes&&prim.attributes.TEXCOORD_0!==undefined){
+        var acc=accessors[prim.attributes.TEXCOORD_0];
+        var bv=bufferViews[acc.bufferView];
+        var offset=bv.byteOffset||0;
+        var buf=bin.slice(offset,offset+bv.byteLength);
+        var arr=new Float32Array(buf.buffer,buf.byteOffset,buf.byteLength/4);
+        geo.setAttribute('uv',new scope.BufferAttribute(arr,2));
+      }
+      // Normals
+      if(prim.attributes&&prim.attributes.NORMAL!==undefined){
+        var acc=accessors[prim.attributes.NORMAL];
+        var bv=bufferViews[acc.bufferView];
+        var offset=bv.byteOffset||0;
+        var buf=bin.slice(offset,offset+bv.byteLength);
+        var arr=new Float32Array(buf.buffer,buf.byteOffset,buf.byteLength/4);
+        geo.setAttribute('normal',new scope.BufferAttribute(arr,3));
+      }
+      // Indices
+      if(prim.indices!==undefined){
+        var acc=accessors[prim.indices];
+        var bv=bufferViews[acc.bufferView];
+        var offset=bv.byteOffset||0;
+        var buf=bin.slice(offset,offset+bv.byteLength);
+        var compType=acc.componentType;
+        var arr;
+        if(compType===5121) arr=new Uint8Array(buf.buffer,buf.byteOffset,bv.byteLength);
+        else if(compType===5123) arr=new Uint16Array(buf.buffer,buf.byteOffset,bv.byteLength/2);
+        else arr=new Uint32Array(buf.buffer,buf.byteOffset,bv.byteLength/4);
+        geo.setIndex(new scope.BufferAttribute(arr,1));
+      }
+
+      // ── Vertex Colors intelligents ──────────────────────
+      // Basés sur la position Y et le radius de chaque vertex.
+      // Y normalisé : 0 = base du tronc, 1 = sommet des palmes
+      // Radius : petit = tronc central, grand = extrémité des feuilles
+      if(posArr){
+        var nVerts=posArr.length/3;
+        // Trouver les bornes Y et radius du modèle
+        var yMin=Infinity,yMax=-Infinity,rMax=0;
+        for(var vi=0;vi<nVerts;vi++){
+          var px=posArr[vi*3],py=posArr[vi*3+1],pz=posArr[vi*3+2];
+          if(py<yMin)yMin=py; if(py>yMax)yMax=py;
+          var r=Math.sqrt(px*px+pz*pz);
+          if(r>rMax)rMax=r;
+        }
+        var yRange=yMax-yMin||1;
+        var rMaxSafe=rMax||1;
+
+        var colors=new Float32Array(nVerts*3);
+        for(var vi=0;vi<nVerts;vi++){
+          var px=posArr[vi*3],py=posArr[vi*3+1],pz=posArr[vi*3+2];
+          // Y normalisé 0→1
+          var yn=(py-yMin)/yRange;
+          // Radius normalisé 0→1
+          var rn=Math.sqrt(px*px+pz*pz)/rMaxSafe;
+          // Score "tronc" : vertex bas + radius petit
+          // Score "feuille" : vertex haut OU radius grand
+          // Zone tronc  : yn < 0.72 ET rn < 0.22
+          // Zone pétiole: yn entre 0.68-0.82 ET rn < 0.35
+          // Zone feuille: le reste (haut + étendu)
+          var trunkScore=Math.max(0,1-(yn/0.72))*(Math.max(0,1-(rn/0.22)));
+          var leafScore=Math.min(1,Math.max(0,(yn-0.60)/0.25))*Math.min(1,Math.max(0,(rn-0.10)/0.30));
+          var petScore=Math.max(0,1-Math.abs(trunkScore-leafScore)*2)*0.4;
+
+          // Variation pseudo-aléatoire stable par position
+          var seed=(px*73.1+py*91.7+pz*37.3);
+          var noise1=(Math.sin(seed*127.1)*43758.5453)%1;
+          var noise2=(Math.sin(seed*269.5+1.3)*43758.5453)%1;
+          if(noise1<0)noise1+=1; if(noise2<0)noise2+=1;
+
+          // Sélectionner la couleur de base selon la zone
+          var col;
+          if(trunkScore>0.5){
+            // Zone tronc : couleur brune avec variation
+            var ci=Math.floor(noise1*TRUNK_COLORS.length);
+            col=TRUNK_COLORS[ci].slice();
+            // Variation légère selon hauteur (plus clair en haut du tronc)
+            var lightBoost=yn*0.08;
+            col[0]+=lightBoost; col[1]+=lightBoost*0.6; col[2]+=lightBoost*0.2;
+            // Variation angulaire (côté exposé au soleil plus clair)
+            var angle=Math.atan2(pz,px);
+            var sunFactor=Math.max(0,(Math.cos(angle+0.5)+1)*0.5)*0.06;
+            col[0]+=sunFactor; col[1]+=sunFactor*0.7;
+          } else if(leafScore>0.4){
+            // Zone feuilles : vert naturel varié
+            var ci=Math.floor(noise1*LEAF_COLORS.length);
+            col=LEAF_COLORS[ci].slice();
+            // Variation selon la hauteur (plus clair aux extrémités)
+            var tipBoost=(yn-0.75)*0.15;
+            if(tipBoost>0){col[1]+=tipBoost; col[0]+=tipBoost*0.3;}
+            // Variation selon l'exposition (dessus plus clair)
+            var py2=posArr[vi*3+1];
+            col[1]+=noise2*0.06;
+          } else {
+            // Zone de transition pétiole
+            var ci=Math.floor(noise1*PETIOLE_COLORS.length);
+            col=PETIOLE_COLORS[ci].slice();
+            // Mélange progressif tronc/feuille
+            var mix=Math.max(0,Math.min(1,(yn-0.55)/0.25));
+            var lci=Math.floor(noise2*LEAF_COLORS.length);
+            var lc2=LEAF_COLORS[lci];
+            col[0]=col[0]*(1-mix)+lc2[0]*mix;
+            col[1]=col[1]*(1-mix)+lc2[1]*mix;
+            col[2]=col[2]*(1-mix)+lc2[2]*mix;
+          }
+
+          // Clamp [0,1]
+          colors[vi*3]  =Math.max(0,Math.min(1,col[0]));
+          colors[vi*3+1]=Math.max(0,Math.min(1,col[1]));
+          colors[vi*3+2]=Math.max(0,Math.min(1,col[2]));
+        }
+        geo.setAttribute('color',new scope.BufferAttribute(colors,3));
+      }
+
+      geo.computeVertexNormals();
+
+      // Matériau avec vertex colors — MeshStandardMaterial pour PBR
+      var mat=new scope.MeshStandardMaterial({
+        vertexColors:true,
+        roughness:0.85,
+        metalness:0.0,
+        side:scope.DoubleSide
+      });
+
+      var mesh=new scope.Mesh(geo,mat);
+      mesh.castShadow=true;
+      mesh.receiveShadow=true;
+      if(meshDef.name)mesh.name=meshDef.name;
+      scene.add(mesh);
+    });
+  });
+
+  onLoad({scene:scene,scenes:[scene],animations:[],cameras:[],asset:json.asset||{}});
+}
+};
+scope.GLTFLoader=GLTFLoader;
+})();
+</script>
+<style>
+:root{--sage:#7a9e64;--sage-l:#c8ddb8;--sage-d:#3a5a28;--cream:#f5f0e8;--ink:#1c1f1a;--mist:#6b7566;--gold:#c9a84c;--fd:'DM Serif Display',Georgia,serif;--fb:'DM Sans',system-ui,sans-serif;--ease:.28s cubic-bezier(.4,0,.2,1)}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;width:100%;overflow:hidden;background:var(--cream);color:var(--ink);font-family:var(--fb);font-size:15px;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:var(--sage-l);border-radius:2px}
+.screen{position:absolute;inset:0;display:flex;flex-direction:column;transition:opacity .5s,transform .5s}
+.screen.hidden{opacity:0;transform:translateY(18px);pointer-events:none}
+
+/* SETUP */
+#screen-setup{background:var(--cream);overflow-y:auto;padding-bottom:48px}
+.setup-hero{position:relative;padding:52px 40px 42px;background:var(--ink);overflow:hidden}
+.setup-hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 80% at 80% 50%,rgba(122,158,100,.18),transparent 70%)}
+.hero-leaves{position:absolute;top:-20px;right:-30px;font-size:160px;opacity:.07;user-select:none;transform:rotate(-15deg);line-height:1}
+.hero-badge{display:inline-flex;align-items:center;gap:8px;background:rgba(122,158,100,.2);border:1px solid rgba(122,158,100,.35);border-radius:40px;padding:5px 14px;font-size:11px;font-weight:500;color:var(--sage-l);letter-spacing:.08em;text-transform:uppercase;margin-bottom:18px}
+.setup-hero h1{font-family:var(--fd);font-size:clamp(30px,6vw,50px);font-weight:400;color:var(--cream);line-height:1.15;margin-bottom:10px}
+.setup-hero h1 em{font-style:italic;color:var(--sage-l)}
+.setup-hero p{font-size:13px;color:rgba(245,240,232,.5);font-weight:300;max-width:420px}
+.setup-body{padding:0 20px;max-width:680px;margin:0 auto;width:100%}
+.step-card{margin:22px 0;background:#fff;border-radius:20px;border:1px solid rgba(28,31,26,.07);overflow:hidden;box-shadow:0 2px 20px rgba(28,31,26,.06)}
+.step-hd{display:flex;align-items:center;gap:14px;padding:18px 22px 14px;border-bottom:1px solid rgba(28,31,26,.06)}
+.step-num{width:30px;height:30px;background:var(--ink);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:var(--cream);flex-shrink:0;transition:background var(--ease)}
+.step-num.ok{background:var(--sage)}
+.step-title{font-size:15px;font-weight:600}
+.step-sub{font-size:12px;color:var(--mist);margin-top:1px}
+.step-body{padding:18px 22px 22px}
+.photo-guide{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.photo-slot{border:1.5px dashed rgba(122,158,100,.35);border-radius:14px;padding:14px 10px;text-align:center;cursor:pointer;transition:all var(--ease);background:rgba(122,158,100,.03);position:relative;min-height:100px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px}
+.photo-slot:hover{border-color:var(--sage);background:rgba(122,158,100,.08)}
+.photo-slot.has-photo{border-style:solid;border-color:var(--sage)}
+.photo-slot .ps-icon{font-size:26px}.photo-slot .ps-label{font-size:11px;font-weight:500}.photo-slot .ps-hint{font-size:10px;color:var(--mist);line-height:1.3}
+.photo-slot .ps-badge{position:absolute;top:6px;right:6px;background:var(--sage);color:#fff;border-radius:10px;font-size:9px;padding:2px 6px;font-weight:600}
+.photo-slot .ps-badge.opt{background:var(--mist)}
+.photo-slot input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+.photo-slot img.thumb{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:12px;pointer-events:none}
+.photo-slot.has-photo .ps-icon,.photo-slot.has-photo .ps-label,.photo-slot.has-photo .ps-hint{opacity:0}
+.photo-del{position:absolute;top:5px;left:5px;width:20px;height:20px;background:rgba(28,31,26,.7);color:#fff;border-radius:50%;border:none;font-size:11px;cursor:pointer;display:none;align-items:center;justify-content:center;z-index:2}
+.photo-slot.has-photo .photo-del{display:flex}
+.photo-tip{font-size:12px;color:var(--mist);padding:10px 14px;background:rgba(201,168,76,.07);border-radius:10px;border-left:3px solid var(--gold)}
+.slider-row{display:flex;flex-direction:column;gap:14px}
+.slider-item{display:grid;grid-template-columns:80px 1fr 60px;align-items:center;gap:12px}
+.slider-item label{font-size:11px;font-weight:500;color:var(--mist);text-transform:uppercase;letter-spacing:.06em}
+input[type=range].g-slider{-webkit-appearance:none;appearance:none;height:4px;border-radius:4px;background:rgba(28,31,26,.1);outline:none;cursor:pointer;width:100%}
+input[type=range].g-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--ink);cursor:pointer}
+.slider-val{font-size:15px;font-weight:600;text-align:right}
+.dims-visual{margin-top:18px;display:flex;flex-direction:column;align-items:center;gap:8px}
+#dims-rect{border:2px solid var(--sage);border-radius:4px;background:rgba(122,158,100,.1);transition:all .4s;display:flex;align-items:center;justify-content:center}
+#dims-rect span{font-size:12px;color:var(--sage-d);font-weight:500}
+.dims-sub{font-size:12px;color:var(--mist)}
+.soil-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+@media(max-width:420px){.soil-grid{grid-template-columns:repeat(2,1fr)}}
+.soil-btn{border:1.5px solid rgba(28,31,26,.1);border-radius:14px;padding:14px 8px;cursor:pointer;text-align:center;background:var(--cream);transition:all var(--ease);font-family:var(--fb)}
+.soil-btn:hover{border-color:rgba(28,31,26,.22);transform:translateY(-2px)}
+.soil-btn.active{border-color:var(--sage);background:rgba(122,158,100,.09);box-shadow:0 0 0 3px rgba(122,158,100,.14)}
+.soil-btn .si{font-size:26px;display:block;margin-bottom:5px}
+.soil-btn .sn{font-size:11px;font-weight:600;display:block}
+.soil-btn .sd{font-size:10px;color:var(--mist);display:block;margin-top:2px}
+.soil-info{margin-top:14px;padding:12px 16px;background:rgba(122,158,100,.07);border-radius:10px;border-left:3px solid var(--sage);font-size:13px;color:var(--ink)}
+.setup-cta{max-width:680px;margin:8px auto 0;padding:0 20px;width:100%}
+.btn-create{width:100%;padding:17px 24px;background:var(--ink);color:var(--cream);border:none;border-radius:20px;font-size:16px;font-weight:500;font-family:var(--fb);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:12px;transition:all var(--ease)}
+.btn-create:hover{background:#2e3a2b;transform:translateY(-2px);box-shadow:0 8px 32px rgba(28,31,26,.22)}
+.btn-create .arr{font-size:20px;transition:transform var(--ease)}
+.btn-create:hover .arr{transform:translateX(5px)}
+.setup-note{text-align:center;margin-top:10px;font-size:12px;color:var(--mist)}
+
+/* ÉDITEUR */
+#screen-editor{background:#1a1f17}
+#canvas-wrap{position:absolute;inset:0;z-index:0}
+#canvas-wrap canvas{display:block;width:100%!important;height:100%!important}
+#topbar{position:absolute;top:0;left:0;right:0;height:54px;background:rgba(18,22,16,.9);backdrop-filter:blur(16px);border-bottom:.5px solid rgba(200,221,184,.1);display:flex;align-items:center;padding:0 14px;gap:10px;z-index:200}
+.tb-chips{display:flex;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:5px;background:rgba(200,221,184,.07);border:.5px solid rgba(200,221,184,.13);border-radius:20px;padding:4px 10px;font-size:11px;color:rgba(200,221,184,.5)}
+.chip b{color:rgba(200,221,184,.8);font-weight:500}
+.tb-right{margin-left:auto;display:flex;gap:6px;align-items:center}
+.tb-btn{padding:6px 13px;background:rgba(200,221,184,.07);border:.5px solid rgba(200,221,184,.14);border-radius:20px;font-size:11px;color:rgba(200,221,184,.6);cursor:pointer;font-family:var(--fb);transition:all var(--ease)}
+.tb-btn:hover{background:rgba(200,221,184,.14);color:var(--sage-l)}
+.tb-btn.accent{background:var(--sage);border-color:var(--sage);color:var(--ink);font-weight:500}
+.tb-btn.accent:hover{background:var(--sage-l)}
+#tod-widget{display:flex;align-items:center;gap:4px;background:rgba(200,221,184,.06);border:.5px solid rgba(200,221,184,.12);border-radius:24px;padding:4px 6px}
+.tod-btn{width:32px;height:32px;border:none;border-radius:20px;background:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all .22s;position:relative}
+.tod-btn:hover{background:rgba(200,221,184,.12);transform:scale(1.1)}
+.tod-btn.active{background:rgba(200,221,184,.16);box-shadow:inset 0 0 0 1px rgba(200,221,184,.3)}
+.tod-btn[data-tip]::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);background:var(--ink);color:var(--cream);font-size:10px;font-family:var(--fb);padding:4px 9px;border-radius:7px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s}
+.tod-btn:hover[data-tip]::after{opacity:1}
+#ltb{position:absolute;left:12px;top:66px;z-index:150;display:flex;flex-direction:column;gap:6px}
+.tool-grp{background:rgba(18,22,16,.85);backdrop-filter:blur(12px);border:.5px solid rgba(200,221,184,.12);border-radius:14px;padding:6px;display:flex;flex-direction:column;gap:3px}
+.t-btn{width:40px;height:40px;border:none;background:none;border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:rgba(200,221,184,.4);font-size:15px;transition:all var(--ease);font-family:var(--fb)}
+.t-btn:hover{background:rgba(200,221,184,.1);color:var(--sage-l)}
+.t-btn.active{background:rgba(122,158,100,.22);color:var(--sage-l);box-shadow:inset 0 0 0 1px rgba(122,158,100,.35)}
+/* Tooltip grille */
+.t-btn[data-label]::after{content:attr(data-label);position:absolute;left:52px;top:50%;transform:translateY(-50%);background:rgba(18,22,16,.92);color:var(--sage-l);font-size:10px;padding:4px 10px;border-radius:8px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:10}
+.t-btn:hover[data-label]::after{opacity:1}
+#rpal{position:absolute;right:12px;top:66px;width:188px;z-index:150;background:rgba(18,22,16,.9);backdrop-filter:blur(16px);border:.5px solid rgba(200,221,184,.12);border-radius:20px;overflow:hidden;max-height:calc(100vh - 150px);display:flex;flex-direction:column;transition:width var(--ease),border-radius var(--ease)}
+#rpal.collapsed{width:44px;border-radius:14px}
+.rpal-hd{padding:13px 15px 11px;border-bottom:.5px solid rgba(200,221,184,.08);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rpal-hd h3{font-size:11px;font-weight:500;color:rgba(200,221,184,.45);letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;overflow:hidden;transition:opacity var(--ease),max-width var(--ease);max-width:120px}
+#rpal.collapsed .rpal-hd h3{opacity:0;max-width:0}
+#rpal.collapsed .rpal-soil{display:none}
+.rpal-soil{margin-top:4px;font-size:10px;color:rgba(200,221,184,.85);font-weight:400}
+#rpal.collapsed .rpal-body{display:none}
+#rpal.collapsed .rpal-hd{border-bottom:none;padding:12px;justify-content:center}
+#rpal.collapsed #rpal-arrow{display:none}
+.rpal-toggle{width:28px;height:28px;flex-shrink:0;border:none;background:rgba(200,221,184,.08);border-radius:8px;cursor:pointer;color:rgba(200,221,184,.65);font-size:16px;display:flex;align-items:center;justify-content:center;transition:all var(--ease)}
+.rpal-toggle:hover{background:rgba(200,221,184,.16);color:var(--sage-l)}
+/* === PALETTE LIBRARY REDESIGN === */
+#rpal{width:210px}
+#rpal.collapsed{width:44px}
+.rpal-body{overflow-y:auto;overflow-x:hidden;padding:8px;flex:1;max-height:calc(100vh - 160px);scrollbar-width:thin;scrollbar-color:rgba(122,158,100,.3) transparent}
+.rpal-body::-webkit-scrollbar{width:3px}
+.rpal-body::-webkit-scrollbar-thumb{background:rgba(122,158,100,.3);border-radius:2px}
+/* SEARCH BAR */
+#plant-search{width:100%;box-sizing:border-box;background:rgba(200,221,184,.07);border:.5px solid rgba(200,221,184,.15);border-radius:10px;padding:7px 10px;font-size:11px;color:rgba(200,221,184,.8);font-family:var(--fb);outline:none;margin-bottom:8px;display:block}
+#plant-search::placeholder{color:rgba(200,221,184,.3)}
+#plant-search:focus{border-color:rgba(122,158,100,.5);background:rgba(200,221,184,.10)}
+/* CATEGORY PILLS — vertical scroll list */
+.cat-tabs{display:flex;flex-direction:column;gap:2px;margin-bottom:10px}
+.cat-tab{padding:6px 10px;background:rgba(200,221,184,.04);border:.5px solid rgba(200,221,184,.08);border-radius:8px;font-size:10px;color:rgba(200,221,184,.45);cursor:pointer;font-family:var(--fb);transition:all var(--ease);text-align:left;display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden}
+.cat-tab:hover{background:rgba(122,158,100,.12);color:var(--sage-l);border-color:rgba(122,158,100,.25)}
+.cat-tab.active{background:rgba(122,158,100,.2);border-color:rgba(122,158,100,.45);color:var(--sage-l);font-weight:500}
+.cat-tab .cat-count{margin-left:auto;font-size:9px;color:rgba(200,221,184,.3);background:rgba(200,221,184,.06);border-radius:10px;padding:1px 5px;flex-shrink:0}
+.cat-tab.active .cat-count{color:rgba(200,221,184,.5);background:rgba(122,158,100,.15)}
+/* SECTION HEADER inside grid */
+.grid-section-hd{grid-column:1/-1;font-size:9px;font-weight:600;color:rgba(200,221,184,.3);text-transform:uppercase;letter-spacing:.08em;padding:8px 2px 4px;margin-top:4px;border-top:.5px solid rgba(200,221,184,.06)}
+.grid-section-hd:first-child{margin-top:0;border-top:none;padding-top:2px}
+/* PLANT CARDS — 2 columns */
+#plant-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:5px;padding:2px 0}
+.obj-tile{background:rgba(200,221,184,.04);border:.5px solid rgba(200,221,184,.09);border-radius:10px;padding:9px 6px 7px;text-align:center;cursor:pointer;transition:all var(--ease);position:relative;user-select:none;min-height:78px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start}
+.obj-tile:hover{background:rgba(122,158,100,.11);border-color:rgba(122,158,100,.3);transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,.2)}
+.obj-tile.sel{background:rgba(122,158,100,.2);border-color:rgba(122,158,100,.55);box-shadow:0 0 0 1px rgba(122,158,100,.3)}
+.obj-tile.rec::before{content:'★';position:absolute;top:4px;right:5px;font-size:8px;color:var(--gold)}
+.plant-preview{width:48px;height:48px;margin:0 auto 5px;flex-shrink:0}
+.plant-preview svg{width:100%;height:100%}
+.on{font-size:9px;color:rgba(200,221,184,.6);line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;width:100%}
+.on-sci{font-size:7px;color:rgba(200,221,184,.22);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%;margin-top:1px}
+.obj-tile.sel .on{color:var(--sage-l);font-weight:500}
+.obj-tile.sel .on-sci{color:rgba(200,221,184,.35)}
+.pal-sec{font-size:10px;font-weight:500;color:rgba(200,221,184,.28);letter-spacing:.1em;text-transform:uppercase;margin:10px 0 6px;padding:0 2px}
+.pal-sec:first-child{margin-top:0}
+.obj-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:3px}
+.obj-tile{background:rgba(200,221,184,.04);border:.5px solid rgba(200,221,184,.1);border-radius:10px;padding:10px 5px 8px;text-align:center;cursor:pointer;transition:all var(--ease);position:relative;user-select:none}
+.obj-tile:hover{background:rgba(122,158,100,.12);border-color:rgba(122,158,100,.3)}
+.obj-tile.sel{background:rgba(122,158,100,.2);border-color:rgba(122,158,100,.55)}
+.obj-tile.rec::before{content:'★';position:absolute;top:3px;right:4px;font-size:8px;color:var(--gold)}
+.oi{font-size:20px;display:block;line-height:1;margin-bottom:4px}
+.on{font-size:9.5px;color:rgba(200,221,184,.55);line-height:1.2}
+.obj-tile.sel .on{color:var(--sage-l)}
+#obj-bar{position:absolute;bottom:72px;left:50%;transform:translateX(-50%);z-index:150;background:rgba(18,22,16,.93);backdrop-filter:blur(16px);border:.5px solid rgba(200,221,184,.15);border-radius:30px;padding:11px 18px;display:flex;align-items:center;gap:14px;opacity:0;pointer-events:none;transition:all var(--ease);white-space:nowrap}
+#obj-bar.on{opacity:1;pointer-events:all}
+.cp{display:flex;flex-direction:column;gap:4px;align-items:center}
+.cp label{font-size:9px;color:rgba(200,221,184,.3);letter-spacing:.1em;text-transform:uppercase}
+.cp input[type=range]{width:80px;height:3px;-webkit-appearance:none;appearance:none;background:rgba(200,221,184,.15);border-radius:3px;cursor:pointer;outline:none}
+.cp input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--sage-l);cursor:pointer}
+.cv{font-size:11px;color:rgba(200,221,184,.45);min-width:28px;text-align:center}
+.csep{width:.5px;height:30px;background:rgba(200,221,184,.1)}
+.c-del{padding:7px 13px;background:rgba(220,60,60,.12);border:.5px solid rgba(220,60,60,.3);border-radius:20px;color:#ff7b7b;font-size:12px;cursor:pointer;font-family:var(--fb);transition:all var(--ease)}
+.c-del:hover{background:rgba(220,60,60,.22)}
+#tabs{position:fixed;bottom:0;left:0;right:0;height:62px;background:rgba(18,22,16,.95);backdrop-filter:blur(20px);border-top:.5px solid rgba(200,221,184,.1);display:flex;z-index:400}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;border:none;background:none;color:rgba(200,221,184,.32);font-size:10px;font-weight:500;font-family:var(--fb);cursor:pointer;transition:color var(--ease);letter-spacing:.04em;text-transform:uppercase;position:relative}
+.tab::before{content:'';position:absolute;top:0;left:25%;right:25%;height:2px;background:var(--sage);border-radius:0 0 2px 2px;transform:scaleX(0);transition:transform var(--ease)}
+.tab.active{color:var(--sage-l)}.tab.active::before{transform:scaleX(1)}
+.tab .ti{font-size:20px;transition:transform var(--ease)}.tab.active .ti{transform:scale(1.12)}
+/* === BOTTOM DRAWER — fixed to viewport bottom, outside any stacking context === */
+.panel{
+  position:fixed !important;
+  left:0 !important;
+  right:0 !important;
+  bottom:0 !important;
+  top:auto !important;
+  width:100% !important;
+  margin:0 !important;
+  box-sizing:border-box;
+  background:rgba(14,18,12,.98);
+  backdrop-filter:blur(24px);
+  -webkit-backdrop-filter:blur(24px);
+  border-top:.5px solid rgba(200,221,184,.15);
+  border-radius:20px 20px 0 0;
+  box-shadow:0 -12px 50px rgba(0,0,0,.6);
+  transform:translateY(100%);
+  transition:transform .4s cubic-bezier(.32,0,.18,1);
+  z-index:9000;
+  max-height:75vh;
+  overflow-y:auto;
+  overflow-x:hidden;
+  visibility:hidden;
+  pointer-events:none;
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  scrollbar-width:thin;
+  scrollbar-color:rgba(122,158,100,.25) transparent
+}
+.panel::-webkit-scrollbar{width:3px}
+.panel::-webkit-scrollbar-thumb{background:rgba(122,158,100,.25);border-radius:2px}
+.panel.open{
+  transform:translateY(0) !important;
+  visibility:visible;
+  pointer-events:all
+}
+/* Poignée visuelle (handle) */
+.panel-handle{
+  width:40px;height:4px;
+  background:rgba(200,221,184,.2);
+  border-radius:2px;
+  margin:14px auto 0;
+}
+#pIA{padding:8px 22px 22px;position:relative}
+#pIA h2{font-family:var(--fd);font-size:21px;font-weight:400;color:var(--sage-l);margin-bottom:3px}
+#pIA>p{font-size:13px;color:rgba(200,221,184,.38);font-weight:300;margin-bottom:16px}
+.panel-close{position:absolute;top:16px;right:16px;width:30px;height:30px;border:none;border-radius:50%;background:rgba(200,221,184,.08);color:rgba(200,221,184,.5);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all var(--ease);font-family:var(--fb)}
+.panel-close:hover{background:rgba(200,221,184,.18);color:var(--sage-l);transform:scale(1.1)}
+.ia-soil-tag{display:inline-flex;align-items:center;gap:6px;margin-bottom:16px;background:rgba(201,168,76,.1);border:.5px solid rgba(201,168,76,.25);border-radius:20px;padding:4px 12px;font-size:11px;color:var(--gold)}
+.themes-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+@media(max-width:480px){.themes-grid{grid-template-columns:repeat(2,1fr)}}
+.theme-card{background:rgba(200,221,184,.04);border:.5px solid rgba(200,221,184,.1);border-radius:14px;padding:15px 10px;cursor:pointer;text-align:center;transition:all .22s}
+.theme-card:hover{background:rgba(122,158,100,.1);border-color:rgba(122,158,100,.32);transform:translateY(-2px)}
+.theme-card.active{background:rgba(122,158,100,.16);border-color:rgba(122,158,100,.5)}
+@keyframes pglow{0%,100%{box-shadow:0 0 0 0 rgba(122,158,100,.2)}50%{box-shadow:0 0 0 6px rgba(122,158,100,.05)}}
+.theme-card.gen{animation:pglow 1s infinite}
+.ti2{font-size:26px;display:block;margin-bottom:7px}
+.tn{font-size:12px;font-weight:500;color:rgba(200,221,184,.8)}
+.td{font-size:10px;color:rgba(200,221,184,.32);margin-top:2px}
+.ia-bar{margin-top:14px;padding:13px 16px;background:rgba(122,158,100,.07);border:.5px solid rgba(122,158,100,.2);border-radius:12px;font-size:13px;color:var(--sage-l);display:none;align-items:center;gap:10px}
+.ia-bar.on{display:flex}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:16px;height:16px;border:2px solid rgba(122,158,100,.22);border-top-color:var(--sage);border-radius:50%;animation:spin .75s linear infinite;flex-shrink:0}
+#ia-apply-wrap{display:block;padding:16px 0 4px}
+#ia-apply-btn{width:100%;padding:14px;background:rgba(200,221,184,.08);border:.5px solid rgba(200,221,184,.15);border-radius:14px;font-size:15px;font-weight:600;font-family:var(--fb);color:rgba(200,221,184,.3);cursor:not-allowed;transition:all var(--ease);display:flex;align-items:center;justify-content:center;gap:8px}
+#ia-apply-btn.active{background:var(--sage);border-color:var(--sage);color:var(--ink);cursor:pointer}
+#ia-apply-btn.active:hover{background:var(--sage-l);transform:translateY(-1px);box-shadow:0 6px 20px rgba(122,158,100,.3)}
+.apply-name{font-weight:400;opacity:.75;font-size:13px}
+#pSaves{padding:22px}
+#pSaves h2{font-family:var(--fd);font-size:21px;font-weight:400;color:var(--sage-l);margin-bottom:3px}
+#pSaves>p{font-size:13px;color:rgba(200,221,184,.38);font-weight:300;margin-bottom:16px}
+.sv-acts{display:flex;gap:8px;margin-bottom:18px}
+.sv-btn-p{padding:10px 18px;background:var(--sage);border:none;border-radius:30px;font-size:13px;font-weight:500;font-family:var(--fb);color:var(--ink);cursor:pointer;transition:all var(--ease)}
+.sv-btn-p:hover{background:var(--sage-l)}
+.sv-btn-s{padding:10px 15px;background:rgba(200,221,184,.07);border:.5px solid rgba(200,221,184,.14);border-radius:30px;font-size:13px;color:rgba(200,221,184,.55);font-family:var(--fb);cursor:pointer;transition:all var(--ease)}
+.sv-btn-s:hover{background:rgba(200,221,184,.12);color:var(--sage-l)}
+.sv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+@media(max-width:400px){.sv-grid{grid-template-columns:1fr}}
+.sv-card{background:rgba(200,221,184,.04);border:.5px solid rgba(200,221,184,.09);border-radius:14px;overflow:hidden;transition:all var(--ease)}
+.sv-card:hover{border-color:rgba(122,158,100,.32);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.22)}
+.sv-thumb{height:82px;display:flex;align-items:center;justify-content:center;font-size:38px;background:linear-gradient(140deg,rgba(122,158,100,.12),rgba(92,61,46,.08))}
+.sv-info{padding:10px 12px}
+.sv-name{font-size:13px;font-weight:500;color:rgba(200,221,184,.82);margin-bottom:3px}
+.sv-meta{font-size:10px;color:rgba(200,221,184,.28);display:flex;flex-wrap:wrap;gap:6px}
+.sv-row{display:flex;gap:5px;margin-top:9px;flex-wrap:wrap}
+.sv-sm{font-size:10px;padding:4px 8px;background:rgba(200,221,184,.06);border:.5px solid rgba(200,221,184,.12);border-radius:20px;color:rgba(200,221,184,.5);cursor:pointer;font-family:var(--fb);transition:all var(--ease)}
+.sv-sm:hover{background:rgba(200,221,184,.12);color:var(--sage-l)}
+.sv-sm.del{color:rgba(255,100,100,.55);border-color:rgba(220,60,60,.2)}
+.sv-sm.del:hover{background:rgba(220,60,60,.12);color:#ff7b7b}
+.sv-empty{text-align:center;padding:28px;color:rgba(200,221,184,.22);font-size:13px}
+.sv-empty-i{font-size:34px;display:block;margin-bottom:10px;opacity:.35}
+#toast{position:absolute;top:64px;left:50%;transform:translateX(-50%) translateY(-6px);background:rgba(18,22,16,.96);backdrop-filter:blur(12px);border:.5px solid rgba(122,158,100,.3);color:var(--sage-l);padding:10px 20px;border-radius:30px;font-size:13px;z-index:300;opacity:0;transition:all .3s;pointer-events:none;white-space:nowrap}
+#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+#loading{position:absolute;inset:0;background:#1a1f17;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:500;transition:opacity .6s}
+#loading.done{opacity:0;pointer-events:none}
+@keyframes fl{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.ld-icon{font-size:50px;margin-bottom:18px;animation:fl 2s ease-in-out infinite}
+.ld-title{font-family:var(--fd);font-size:20px;color:var(--sage-l);margin-bottom:5px}
+.ld-sub{font-size:12px;color:rgba(200,221,184,.3)}
+.ld-bar{width:150px;height:2px;background:rgba(200,221,184,.1);border-radius:2px;margin-top:22px;overflow:hidden}
+.ld-fill{height:100%;width:0;background:var(--sage);border-radius:2px;animation:lp 1.4s ease-out forwards}
+@keyframes lp{to{width:100%}}
+.cam-hint{position:absolute;bottom:75px;left:50%;transform:translateX(-50%);background:rgba(18,22,16,.8);backdrop-filter:blur(8px);border:.5px solid rgba(200,221,184,.12);border-radius:20px;padding:7px 14px;font-size:11px;color:rgba(200,221,184,.45);z-index:100;pointer-events:none;white-space:nowrap;transition:opacity .4s}
+.cam-hint.gone{opacity:0}
+/* Badge grille toggle */
+#grid-badge{font-size:9px;position:absolute;bottom:2px;left:50%;transform:translateX(-50%);color:rgba(200,221,184,.4);letter-spacing:.05em;white-space:nowrap;pointer-events:none}
+</style>
+</head>
+<body>
+
+<!-- ÉCRAN SETUP -->
+<div class="screen" id="screen-setup">
+  <div class="setup-hero">
+    <div class="hero-leaves">🌿</div>
+    <div class="hero-badge">🌱 Garden3D Pro</div>
+    <h1>Créez votre<br><em>jardin idéal</em></h1>
+    <p>Configurez votre espace vert et visualisez-le en 3D temps réel</p>
+  </div>
+  <div class="setup-body">
+    <div class="step-card">
+      <div class="step-hd"><div class="step-num" id="sn1">1</div><div><div class="step-title">Photos du terrain</div><div class="step-sub">Optionnel — aide l'IA à mieux comprendre votre espace</div></div></div>
+      <div class="step-body"><div class="photo-guide" id="photo-guide"></div><p class="photo-tip">💡 Plus vous fournissez de photos, plus les suggestions de l'IA seront précises.</p></div>
+    </div>
+    <div class="step-card">
+      <div class="step-hd"><div class="step-num ok" id="sn2">2</div><div><div class="step-title">Dimensions du jardin</div><div class="step-sub">Longueur et largeur en mètres</div></div></div>
+      <div class="step-body">
+        <div class="slider-row">
+          <div class="slider-item"><label>Longueur</label><input type="range" class="g-slider" id="sl-len" min="4" max="40" value="10" oninput="onDims()"><span class="slider-val" id="sv-len">10 m</span></div>
+          <div class="slider-item"><label>Largeur</label><input type="range" class="g-slider" id="sl-wid" min="3" max="30" value="8" oninput="onDims()"><span class="slider-val" id="sv-wid">8 m</span></div>
+        </div>
+        <div class="dims-visual">
+          <div id="dims-rect" style="width:125px;height:75px"><span id="dims-label">10 × 8 m</span></div>
+          <span class="dims-sub" id="dims-sub">Terrain moyen</span>
+        </div>
+      </div>
+    </div>
+    <div class="step-card">
+      <div class="step-hd"><div class="step-num" id="sn3">3</div><div><div class="step-title">Type de sol</div><div class="step-sub">Pour des recommandations adaptées</div></div></div>
+      <div class="step-body">
+        <div class="soil-grid">
+          <button class="soil-btn active" onclick="setSoil(this,'loam')"><span class="si">🌾</span><span class="sn">Limon</span><span class="sd">Universel</span></button>
+          <button class="soil-btn" onclick="setSoil(this,'clay')"><span class="si">🟤</span><span class="sn">Argile</span><span class="sd">Retient l'eau</span></button>
+          <button class="soil-btn" onclick="setSoil(this,'sand')"><span class="si">🟡</span><span class="sn">Sable</span><span class="sd">Drainant</span></button>
+          <button class="soil-btn" onclick="setSoil(this,'lime')"><span class="si">⚪</span><span class="sn">Calcaire</span><span class="sd">Alcalin</span></button>
+          <button class="soil-btn" onclick="setSoil(this,'humus')"><span class="si">🌱</span><span class="sn">Humus</span><span class="sd">Riche</span></button>
+          <button class="soil-btn" onclick="setSoil(this,'unknown')"><span class="si">❓</span><span class="sn">Inconnu</span><span class="sd">Universel</span></button>
+        </div>
+        <div class="soil-info" id="soil-info"><strong>Sol limoneux :</strong> idéal ! Convient à presque tout.</div>
+      </div>
+    </div>
+  </div>
+  <div class="setup-cta">
+    <button class="btn-create" onclick="launchEditor()">Créer mon jardin 3D <span class="arr">→</span></button>
+    <p class="setup-note">Paramètres modifiables depuis l'éditeur</p>
+  </div>
+</div>
+
+<!-- ÉCRAN ÉDITEUR -->
+<div class="screen hidden" id="screen-editor">
+  <div id="canvas-wrap"></div>
+  <div id="loading">
+    <div class="ld-icon">🌿</div>
+    <div class="ld-title">Génération du jardin…</div>
+    <div class="ld-sub" id="ld-sub">Création du terrain</div>
+    <div class="ld-bar"><div class="ld-fill"></div></div>
+  </div>
+  <div id="topbar">
+    <div class="tb-chips">
+      <span class="chip">📐 <b id="info-dims">—</b></span>
+      <span class="chip">🌱 <b id="info-soil">—</b></span>
+      <span class="chip">🌳 <b id="info-count">0</b></span>
+    </div>
+    <div class="tb-right">
+      <div id="tod-widget">
+        <button class="tod-btn active" id="tod-morning" data-tip="Matin" onclick="setTOD('morning')">🌅</button>
+        <button class="tod-btn" id="tod-noon" data-tip="Midi" onclick="setTOD('noon')">☀️</button>
+        <button class="tod-btn" id="tod-evening" data-tip="Soir" onclick="setTOD('evening')">🌇</button>
+      </div>
+      <button class="tb-btn" onclick="resetCam()">🧭 Reset</button>
+      <button class="tb-btn" onclick="topView()">⊞ Top</button>
+      <button class="tb-btn" onclick="clearGarden()">🗑 Vider</button>
+      <button class="tb-btn accent" onclick="doSave()">💾 Sauver</button>
+    </div>
+  </div>
+  <div id="ltb">
+    <div class="tool-grp">
+      <button class="t-btn active" id="tb-place" title="Placer" onclick="setTool('place')">✦</button>
+      <button class="t-btn" id="tb-move" title="Déplacer" onclick="setTool('move')">✥</button>
+    </div>
+    <div class="tool-grp" style="position:relative">
+      <!-- BOUTON TOGGLE GRILLE — CORRIGÉ -->
+      <button class="t-btn active" id="tb-grid" title="Afficher/Masquer la grille" onclick="toggleGrid()" style="font-size:13px;position:relative;">
+        ⊞
+        <span id="grid-badge" style="position:absolute;bottom:1px;left:50%;transform:translateX(-50%);font-size:8px;color:rgba(200,221,184,.5);white-space:nowrap">ON</span>
+      </button>
+    </div>
+  </div>
+  <div id="rpal">
+    <div class="rpal-hd">
+      <div><h3>Bibliothèque</h3><div class="rpal-soil" id="rpal-soil">🌾 Sol limoneux</div></div>
+      <button class="rpal-toggle" onclick="togglePalette()" id="rpal-toggle-btn" title="Ouvrir / Fermer la bibliothèque">
+        🏠<svg id="rpal-arrow" width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-left:3px;transition:transform var(--ease)"><path d="M1 2.5L4 5.5L7 2.5" stroke="rgba(200,221,184,0.6)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div class="rpal-body" id="rpal-body"></div>
+  </div>
+  <div id="obj-bar">
+    <div class="cp"><label>Taille</label><input type="range" id="c-scale" min="0.2" max="3.5" step="0.05" value="1" oninput="updScale(this.value)"><span class="cv" id="cv-scale">1.0×</span></div>
+    <div class="csep"></div>
+    <div class="cp"><label>Rotation</label><input type="range" id="c-rot" min="0" max="360" step="5" value="0" oninput="updRot(this.value)"><span class="cv" id="cv-rot">0°</span></div>
+    <div class="csep"></div>
+    <button class="c-del" onclick="delSelected()">🗑 Suppr.</button>
+  </div>
+
+  <div class="cam-hint" id="cam-hint">🖱 Glisser = rotation · Molette = zoom · Clic droit = déplacement</div>
+  <div id="toast"></div>
+  <div id="tabs">
+    <button class="tab" id="tab-ia"><span class="ti">🤖</span>IA Jardin</button>
+    <button class="tab active" id="tab-garden"><span class="ti">🌿</span>Mon Jardin</button>
+    <button class="tab" id="tab-saves"><span class="ti">💾</span>Sauvegardes</button>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// === GLB MODEL CACHE & LOADER ===
+// ============================================================
+// Photo réelle du palmier embarquée en base64
+var PLANT_PHOTOS = {
+  'palm':         'data:image/png;base64,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',
+  'phoenix':      'data:image/png;base64,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',
+  'washingtonia': 'data:image/png;base64,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',
+  'trachycarpus': 'data:image/png;base64,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'
+};
+
+var GLB_CACHE = {};  // type -> THREE.Group (cloned per instance)
+var GLB_LOADING = {}; // type -> array of callbacks waiting
+
+var GLB_FILES = {};  // id du sujet -> "models/<id>.glb" (rempli automatiquement depuis PLANT_DB)
+
+
+// Load a GLB model (cached). Returns via callback with a cloned Group.
+function loadGLBModel(type, callback){
+  // Already cached
+  if(GLB_CACHE[type]){
+    var clone=GLB_CACHE[type].clone(true);
+    if(callback)callback(clone);
+    return;
+  }
+  // Already loading — queue callback
+  if(GLB_LOADING[type]){
+    GLB_LOADING[type].push(callback);
+    return;
+  }
+  // No data for this type — fallback to procedural
+  if(!GLB_FILES[type]){
+    if(callback)callback(null);
+    return;
+  }
+  GLB_LOADING[type]=[callback];
+  var loader=new THREE.GLTFLoader();
+  loader.load(GLB_FILES[type],function(gltf){
+    var group=gltf.scene;
+
+    // ── 1. Normaliser la hauteur à 1 unité ──────────────
+    var box=new THREE.Box3().setFromObject(group);
+    var h=box.max.y-box.min.y;
+    if(h>0)group.scale.setScalar(1/h);
+
+    // ── 2. Repositionner : base exactement sur Y=0 ───────
+    // On recalcule la bounding box APRÈS le scale
+    box.setFromObject(group);
+    // Décaler le groupe pour que box.min.y soit exactement 0
+    group.position.y=-box.min.y;
+
+    // ── 3. Ombres sur tous les meshes ────────────────────
+    group.traverse(function(o){
+      if(o.isMesh){
+        o.castShadow=true;
+        o.receiveShadow=true;
+      }
+    });
+
+    // ── 4. UPGRADE TEXTURES & COULEURS — Washingtonia + Cyprès ─────────
+    // Règle : aucune modification de géométrie / échelle / position.
+    // On ne touche QUE les matériaux : couleur, saturation, contraste,
+    // et on force une séparation nette tronc vs feuillage.
+    if(type==='washingtonia' || type==='washingtonia2'){
+      // ── WASHINGTONIA : coloriage PAR SOMMET (vertex colors) ─────────
+      // Approche identique à celle du cyprès : classification purement
+      // géométrique, indépendante de la structure interne du GLB.
+      // Règle : les sommets proches de l'axe vertical central = tronc
+      // (brun), tout le reste = palmes (vert). Le tronc d'un palmier est
+      // une fine colonne au centre, les frondes s'étalent largement en
+      // haut — la distance radiale suffit à séparer les deux.
+      var wBox=new THREE.Box3().setFromObject(group);
+      var wH=wBox.max.y-wBox.min.y;
+      var wW=Math.max(wBox.max.x-wBox.min.x, wBox.max.z-wBox.min.z);
+      var wcx=(wBox.min.x+wBox.max.x)*0.5;
+      var wcz=(wBox.min.z+wBox.max.z)*0.5;
+      // Rayon du tronc : 7% de la largeur globale (envergure des frondes).
+      // Le tronc d'un Washingtonia robusta est fin par rapport à la
+      // couronne de palmes.
+      var wTrunkR=wW*0.07;
+      var wTrunkR2=wTrunkR*wTrunkR;
+
+      // Palettes demandées explicitement par l'utilisateur (hex)
+      // Tronc : #5a3a1f, #3e2a17, #7a5230
+      // Feuillage : #1f5a2e, #163d20, #2f7a45
+      var W_BROWN=[
+        [0.3529,0.2275,0.1216], // #5a3a1f brun foncé principal
+        [0.2431,0.1647,0.0902], // #3e2a17 brun très foncé (ombres)
+        [0.4784,0.3216,0.1882], // #7a5230 brun légèrement plus clair (lumière)
+        [0.3000,0.1960,0.1050], // variation intermédiaire foncée
+        [0.4100,0.2700,0.1500]  // variation intermédiaire claire
+      ];
+      var W_GREEN=[
+        [0.1216,0.3529,0.1804], // #1f5a2e vert foncé principal
+        [0.0863,0.2392,0.1255], // #163d20 vert très profond (ombre)
+        [0.1843,0.4784,0.2706], // #2f7a45 vert légèrement plus clair (lumière)
+        [0.1000,0.2900,0.1500], // variation sombre
+        [0.1500,0.4200,0.2300]  // variation claire
+      ];
+      function wHashI(n){var h=(n*2654435761)^(n<<13);return Math.abs(h|0);}
+
+      group.updateMatrixWorld(true);
+      group.traverse(function(o){
+        if(!o.isMesh || !o.geometry) return;
+        var geom=o.geometry;
+        var pos=geom.attributes && geom.attributes.position;
+        if(!pos) return;
+        o.updateMatrixWorld(true);
+        var mw=o.matrixWorld;
+        var colors=new Float32Array(pos.count*3);
+        var v=new THREE.Vector3();
+        for(var vi=0;vi<pos.count;vi++){
+          v.fromBufferAttribute(pos,vi);
+          v.applyMatrix4(mw);
+          var dx=v.x-wcx, dz=v.z-wcz;
+          var distSq=dx*dx+dz*dz;
+          // Classification spécifique par version :
+          // - V1 (washingtonia) : règle EN Y pure. Sur un Washingtonia
+          //   robusta classique, les frondes sont concentrées dans la
+          //   couronne haute, le tronc occupe toute la hauteur en-dessous.
+          //   Un seuil Y à 62% sépare proprement tronc (en-dessous) et
+          //   feuillage (au-dessus), sans qu'aucun sommet de tronc ne
+          //   puisse recevoir du vert, peu importe sa position radiale.
+          // - V2 (washingtonia2) : on garde la règle radiale (7% gW)
+          //   qui marche déjà bien pour ce modèle.
+          var isTrunk;
+          if(type==='washingtonia'){
+            var yNormPre=(v.y-wBox.min.y)/Math.max(wH,1e-6);
+            isTrunk=(yNormPre<0.62);
+          } else {
+            isTrunk=(distSq<wTrunkR2);
+          }
+          var pal=isTrunk?W_BROWN:W_GREEN;
+          var hh=wHashI(vi+(isTrunk?11:4007));
+          var base=pal[hh%pal.length];
+          // Gradient subtil vertical : léger éclaircissement en haut pour
+          // le tronc (lumière du ciel), léger assombrissement en bas
+          // pour le feuillage (ombre interne de la couronne)
+          var yNorm=(v.y-wBox.min.y)/Math.max(wH,1e-6);
+          var gradient=isTrunk?(1+(yNorm-0.5)*0.15):(1+(yNorm-0.5)*0.10);
+          var jit=((hh>>5)%17-8)/100;
+          var factor=gradient*(1+jit);
+          colors[vi*3  ]=Math.max(0,Math.min(1,base[0]*factor));
+          colors[vi*3+1]=Math.max(0,Math.min(1,base[1]*factor));
+          colors[vi*3+2]=Math.max(0,Math.min(1,base[2]*factor));
+        }
+        geom.setAttribute('color', new THREE.BufferAttribute(colors,3));
+
+        var matsA=Array.isArray(o.material)?o.material:[o.material];
+        var newMats=matsA.map(function(m){
+          if(!m) return m;
+          var nm=m.clone();
+          nm.vertexColors=true;
+          if(nm.color) nm.color.setRGB(1,1,1);
+          if(nm.map) nm.map=null;
+          if(nm.emissive) nm.emissive.setRGB(0,0,0);
+          if('roughness' in nm) nm.roughness=0.82;
+          if('metalness' in nm) nm.metalness=0.0;
+          nm.needsUpdate=true;
+          return nm;
+        });
+        o.material=Array.isArray(o.material)?newMats:newMats[0];
+      });
+    }
+
+        // ── 5. CYPRÈS : coloriage PAR SOMMET (vertex colors) ───────────────
+    // Problème résolu : avant, le tri se faisait au niveau du mesh. Si le
+    // GLB fusionne tronc + feuillage dans un seul mesh (ou si le tronc
+    // n'est pas plus étroit que prévu), tout le cyprès se retrouvait vert.
+    // Solution : on classe CHAQUE sommet individuellement selon sa
+    // distance à l'axe vertical central du modèle. Les sommets proches de
+    // l'axe ET dans le bas de l'arbre → brun (tronc). Tout le reste → vert
+    // (feuillage). Ça marche que les meshes soient séparés ou fusionnés.
+    if(type==='bambou'){
+      // ── BAMBOU : séparation STRICTE tronc/feuilles par seuil Y ─────
+      // Règle demandée :
+      //   - de la base jusqu’au début des feuilles = JAUNE uniquement
+      //   - au-dessus                                  = VERT uniquement
+      // Aucun mélange, aucun gradient crossing, séparation dure.
+      //
+      // Détection automatique du point de transition :
+      //   On fait un histogramme de la densité de sommets par tranche Y
+      //   (100 tranches). Le bas du bambou (chaumes seuls) a une densité
+      //   faible et régulière ; l’arrivée des feuilles se traduit par un
+      //   pic de densité. On prend la première tranche où la densité
+      //   dépasse 2× la moyenne des tranches du bas.
+      var bBox=new THREE.Box3().setFromObject(group);
+      var bH=bBox.max.y-bBox.min.y;
+
+      // Palettes STRICTES
+      // Tiges — JAUNE uniquement
+      var B_TRUNK=[
+        [0.8314,0.6275,0.0902], // #d4a017
+        [0.9020,0.7608,0.0000], // #e6c200
+        [0.7020,0.5451,0.0784], // #b38b14
+        [0.8600,0.6900,0.0500],
+        [0.7700,0.5900,0.0850]
+      ];
+      // Feuilles — VERT uniquement
+      var B_LEAF=[
+        [0.1804,0.5451,0.3412], // #2e8b57
+        [0.1216,0.4353,0.2627], // #1f6f43
+        [0.2353,0.7020,0.4431], // #3cb371
+        [0.1700,0.5300,0.3300],
+        [0.2000,0.6200,0.3800]
+      ];
+      function bHashI(n){var h=(n*2654435761)^(n<<13);return Math.abs(h|0);}
+
+      group.updateMatrixWorld(true);
+      var allMeshes=[];
+      group.traverse(function(o){
+        if(o.isMesh && o.geometry && o.geometry.attributes && o.geometry.attributes.position){
+          o.updateMatrixWorld(true);
+          allMeshes.push(o);
+        }
+      });
+
+      // ── PASSE 1 : histogramme de densité des sommets par tranche Y ──
+      var NB=100;
+      var hist=new Array(NB);
+      for(var i=0;i<NB;i++) hist[i]=0;
+      var tmpV=new THREE.Vector3();
+      var totalVerts=0;
+      for(var mi=0;mi<allMeshes.length;mi++){
+        var oo=allMeshes[mi];
+        var pp=oo.geometry.attributes.position;
+        var mm=oo.matrixWorld;
+        totalVerts+=pp.count;
+        for(var vi2=0;vi2<pp.count;vi2++){
+          tmpV.fromBufferAttribute(pp,vi2);
+          tmpV.applyMatrix4(mm);
+          var yr=(tmpV.y-bBox.min.y)/Math.max(bH,1e-6);
+          var bi=Math.floor(yr*NB);
+          if(bi<0) bi=0; if(bi>=NB) bi=NB-1;
+          hist[bi]++;
+        }
+      }
+      // Moyenne de densité dans le premier tiers (zone clairement "tronc seul")
+      var lowEnd=Math.max(1,Math.floor(NB*0.20));
+      var lowSum=0;
+      for(var i=0;i<lowEnd;i++) lowSum+=hist[i];
+      var lowAvg=lowSum/lowEnd;
+      // Seuil : on considère une tranche comme "feuillue" quand sa densité
+      // dépasse 2× la densité moyenne du bas (2× = contraste fort mais
+      // robuste au bruit). On cherche la première tranche à partir de la
+      // 15ème (on ignore 15% en bas pour éviter un faux positif sur la
+      // racine si elle est très dense).
+      var splitBin=-1;
+      var startScan=Math.floor(NB*0.15);
+      var threshold=lowAvg*2.0;
+      for(var i=startScan;i<NB;i++){
+        if(hist[i] > threshold){
+          splitBin=i;
+          break;
+        }
+      }
+      // Fallback : si on n'a rien trouvé, couper à 40% de la hauteur
+      if(splitBin<0) splitBin=Math.floor(NB*0.40);
+      var splitY = bBox.min.y + (splitBin/NB) * bH;
+      // (optionnel log) console.log("bambou splitY fraction =", splitBin/NB);
+
+      // ── PASSE 2 : coloriage strict par Y ──
+      for(var mi3=0;mi3<allMeshes.length;mi3++){
+        var o=allMeshes[mi3];
+        var geom=o.geometry;
+        var pos=geom.attributes.position;
+        var mw=o.matrixWorld;
+        var colors=new Float32Array(pos.count*3);
+        var v=new THREE.Vector3();
+        for(var vi=0;vi<pos.count;vi++){
+          v.fromBufferAttribute(pos,vi);
+          v.applyMatrix4(mw);
+          // SÉPARATION DURE : y < splitY → tronc jaune,
+          //                     y >= splitY → feuilles vertes.
+          var isTrunk = (v.y < splitY);
+          var pal=isTrunk?B_TRUNK:B_LEAF;
+          var hh=bHashI(vi+(isTrunk?29:7919));
+          var base=pal[hh%pal.length];
+          // Aucune modulation qui pourrait faire basculer la teinte
+          // vers l'autre palette : on reste dans la même famille
+          // avec une micro-variation < 10% en luminosité.
+          var jit=((hh>>5)%17-8)/140;
+          var factor=1+jit;
+          colors[vi*3  ]=Math.max(0,Math.min(1,base[0]*factor));
+          colors[vi*3+1]=Math.max(0,Math.min(1,base[1]*factor));
+          colors[vi*3+2]=Math.max(0,Math.min(1,base[2]*factor));
+        }
+        geom.setAttribute('color', new THREE.BufferAttribute(colors,3));
+
+        var matsA=Array.isArray(o.material)?o.material:[o.material];
+        var newMats=matsA.map(function(m){
+          if(!m) return m;
+          var nm=m.clone();
+          nm.vertexColors=true;
+          if(nm.color) nm.color.setRGB(1,1,1);
+          if(nm.map) nm.map=null;
+          if(nm.emissive) nm.emissive.setRGB(0,0,0);
+          if('roughness' in nm) nm.roughness=0.78;
+          if('metalness' in nm) nm.metalness=0.0;
+          nm.needsUpdate=true;
+          return nm;
+        });
+        o.material=Array.isArray(o.material)?newMats:newMats[0];
+      }
+    }
+
+    if(type==='laurier'){
+      // ── LAURIER ROSE : coloriage PAR SOMMET ─────────────────────────
+      // Palettes issues de sources botaniques (Nerium oleander) :
+      //   - feuilles : vert sombre, coriaces, lancéolées
+      //   - fleurs   : rose vif (variété la plus courante)
+      //   - tiges    : bois gris-brun
+      //
+      // Classification géométrique : aucun mesh n'est étiqueté dans le
+      // GLB d'origine, donc on reconstruit par position :
+      //   - axe central → tige/bois (colonne verticale fine)
+      //   - couronne haute + périphérie extérieure → fleurs
+      //   - le reste → feuilles
+      var lBox=new THREE.Box3().setFromObject(group);
+      var lH=lBox.max.y-lBox.min.y;
+      var lW=Math.max(lBox.max.x-lBox.min.x, lBox.max.z-lBox.min.z);
+      var lcx=(lBox.min.x+lBox.max.x)*0.5;
+      var lcz=(lBox.min.z+lBox.max.z)*0.5;
+      var lTrunkR=lW*0.08;
+      var lTrunkR2=lTrunkR*lTrunkR;
+      var lMaxR=lW*0.5;
+
+      // Feuilles — vert sombre du laurier rose
+      var L_LEAF=[
+        [0.1765,0.3529,0.1765], // #2d5a2d
+        [0.1216,0.3020,0.1647], // #1f4d2a
+        [0.2314,0.4196,0.2314], // #3b6b3b
+        [0.1500,0.3300,0.1900],
+        [0.1900,0.3900,0.2100]
+      ];
+      // Fleurs — rose vif caractéristique
+      var L_FLOWER=[
+        [0.9255,0.2549,0.3843], // #ec407a
+        [0.9137,0.1176,0.3882], // #e91e63
+        [0.9412,0.3843,0.5725], // #f06292
+        [0.9569,0.5608,0.6941], // #f48fb1
+        [0.8980,0.2000,0.4400]
+      ];
+      // Tiges ligneuses — gris-brun
+      var L_STEM=[
+        [0.4196,0.3451,0.2588], // #6b5842
+        [0.3529,0.2902,0.2078], // #5a4a35
+        [0.4824,0.4039,0.3098], // #7b674f
+        [0.3800,0.3100,0.2300]
+      ];
+      function lHashI(n){var h=(n*2654435761)^(n<<13);return Math.abs(h|0);}
+
+      group.updateMatrixWorld(true);
+      var lMeshes=[];
+      group.traverse(function(o){
+        if(o.isMesh && o.geometry && o.geometry.attributes && o.geometry.attributes.position){
+          o.updateMatrixWorld(true);
+          lMeshes.push(o);
+        }
+      });
+
+      for(var lmi=0;lmi<lMeshes.length;lmi++){
+        var o=lMeshes[lmi];
+        var geom=o.geometry;
+        var pos=geom.attributes.position;
+        var mw=o.matrixWorld;
+        var colors=new Float32Array(pos.count*3);
+        var v=new THREE.Vector3();
+        for(var vi=0;vi<pos.count;vi++){
+          v.fromBufferAttribute(pos,vi);
+          v.applyMatrix4(mw);
+          var dx=v.x-lcx, dz=v.z-lcz;
+          var distSq=dx*dx+dz*dz;
+          var dist=Math.sqrt(distSq);
+          var yNorm=(v.y-lBox.min.y)/Math.max(lH,1e-6);
+          var rNorm=dist/Math.max(lMaxR,1e-6);
+
+          var pal, saltIdx;
+          var isStem=(distSq<lTrunkR2) && (yNorm<0.70);
+          if(isStem){
+            pal=L_STEM; saltIdx=17;
+          } else {
+            // Fleurs : couronne supérieure OU périphérie haute
+            // (les fleurs du laurier rose apparaissent en bout de branche)
+            var flowerScore = yNorm*0.55 + rNorm*0.45;
+            var h0=lHashI(vi);
+            var jitter=((h0>>3)%100)/1000.0; // 0..0.099
+            if(flowerScore + jitter > 0.80){
+              pal=L_FLOWER; saltIdx=2099;
+            } else {
+              pal=L_LEAF; saltIdx=7919;
+            }
+          }
+
+          var hh=lHashI(vi+saltIdx);
+          var base=pal[hh%pal.length];
+          var gradient=1 + (yNorm-0.5)*0.10;
+          var jit=((hh>>5)%17-8)/130;
+          var factor=gradient*(1+jit);
+          colors[vi*3  ]=Math.max(0,Math.min(1,base[0]*factor));
+          colors[vi*3+1]=Math.max(0,Math.min(1,base[1]*factor));
+          colors[vi*3+2]=Math.max(0,Math.min(1,base[2]*factor));
+        }
+        geom.setAttribute('color', new THREE.BufferAttribute(colors,3));
+
+        var matsA=Array.isArray(o.material)?o.material:[o.material];
+        var newMats=matsA.map(function(m){
+          if(!m) return m;
+          var nm=m.clone();
+          nm.vertexColors=true;
+          if(nm.color) nm.color.setRGB(1,1,1);
+          if(nm.map) nm.map=null;
+          if(nm.emissive) nm.emissive.setRGB(0,0,0);
+          if('roughness' in nm) nm.roughness=0.75;
+          if('metalness' in nm) nm.metalness=0.0;
+          nm.needsUpdate=true;
+          return nm;
+        });
+        o.material=Array.isArray(o.material)?newMats:newMats[0];
+      }
+    }
+
+    if(type==='cypress'){
+      var cBox=new THREE.Box3().setFromObject(group);
+      var cH=cBox.max.y-cBox.min.y;
+      var cW=Math.max(cBox.max.x-cBox.min.x, cBox.max.z-cBox.min.z);
+      var cxC=(cBox.min.x+cBox.max.x)*0.5;
+      var czC=(cBox.min.z+cBox.max.z)*0.5;
+      // Rayon du tronc : ~12% de la largeur globale
+      var trunkR=cW*0.12;
+      var trunkR2=trunkR*trunkR;
+      // Le tronc n'est visible que dans le bas (les branches hautes
+      // masquent complètement le tronc de toute façon)
+      var trunkYmax=cBox.min.y+cH*0.35;
+
+      var BROWN=[
+        [0.22,0.13,0.06],[0.28,0.17,0.08],[0.18,0.10,0.04],
+        [0.32,0.20,0.10],[0.24,0.14,0.06]
+      ];
+      var GREEN=[
+        [0.05,0.18,0.04],[0.07,0.24,0.05],[0.04,0.14,0.03],
+        [0.09,0.28,0.07],[0.06,0.20,0.04],[0.03,0.12,0.02]
+      ];
+      function hashI(n){var h=(n*2654435761)^(n<<13);return Math.abs(h|0);}
+
+      group.updateMatrixWorld(true);
+      group.traverse(function(o){
+        if(!o.isMesh || !o.geometry) return;
+        var geom=o.geometry;
+        var pos=geom.attributes && geom.attributes.position;
+        if(!pos) return;
+        o.updateMatrixWorld(true);
+        var mw=o.matrixWorld;
+        var colors=new Float32Array(pos.count*3);
+        var v=new THREE.Vector3();
+        for(var vi=0;vi<pos.count;vi++){
+          v.fromBufferAttribute(pos,vi);
+          v.applyMatrix4(mw);
+          var dx=v.x-cxC, dz=v.z-czC;
+          var distSq=dx*dx+dz*dz;
+          var isTrunk=(distSq<trunkR2) && (v.y<trunkYmax);
+          var pal=isTrunk?BROWN:GREEN;
+          var hh=hashI(vi+(isTrunk?7:2003));
+          var base=pal[hh%pal.length];
+          var jit=((hh>>5)%17-8)/100;
+          colors[vi*3  ]=Math.max(0,Math.min(1,base[0]*(1+jit)));
+          colors[vi*3+1]=Math.max(0,Math.min(1,base[1]*(1+jit)));
+          colors[vi*3+2]=Math.max(0,Math.min(1,base[2]*(1+jit)));
+        }
+        geom.setAttribute('color', new THREE.BufferAttribute(colors,3));
+
+        var matsA=Array.isArray(o.material)?o.material:[o.material];
+        var newMats=matsA.map(function(m){
+          if(!m) return m;
+          var nm=m.clone();
+          nm.vertexColors=true;
+          if(nm.color) nm.color.setRGB(1,1,1);
+          if(nm.map) nm.map=null;
+          if(nm.emissive) nm.emissive.setRGB(0,0,0);
+          if('roughness' in nm) nm.roughness=0.82;
+          if('metalness' in nm) nm.metalness=0.0;
+          nm.needsUpdate=true;
+          return nm;
+        });
+        o.material=Array.isArray(o.material)?newMats:newMats[0];
+      });
+    }
+
+        // Stocker dans le cache avec position Y déjà corrigée
+    GLB_CACHE[type]=group;
+    var cbs=GLB_LOADING[type]||[];
+    delete GLB_LOADING[type];
+    cbs.forEach(function(cb){if(cb)cb(group.clone(true));});
+  },function(err){
+    console.warn('GLB load error for',type,err);
+    var cbs=GLB_LOADING[type]||[];
+    delete GLB_LOADING[type];
+    cbs.forEach(function(cb){if(cb)cb(null);});
+  });
+}
+
+// ============================================================
+// === ÉTAT GLOBAL ===
+// ============================================================
+var S={soil:'loam',dimL:10,dimW:8,photos:{},tool:'place',selType:'tree_pine',selObj:null,objects:[],theme:'Libre',saves:[]};
+try{S.saves=JSON.parse(localStorage.getItem('g3d_v3')||'[]');}catch(e){S.saves=[];}
+
+var SOIL={
+  clay:{name:'Argile',icon:'🟤',rec:['tree_round','flower','bush']},
+  sand:{name:'Sable',icon:'🟡',rec:['cactus','lavender','bamboo','grass']},
+  loam:{name:'Limon',icon:'🌾',rec:['tree_pine','tree_round','cherry','flower','bush']},
+  lime:{name:'Calcaire',icon:'⚪',rec:['lavender','bush','stone','olive']},
+  humus:{name:'Humus',icon:'🌱',rec:['cherry','flower','palm','pond']},
+  unknown:{name:'Inconnu',icon:'❓',rec:['tree_pine','bush','flower','stone','bench']}
+};
+var SOIL_INFO={clay:'<strong>Sol argileux :</strong> retient l\'eau. Chênes, iris, asters.',sand:'<strong>Sol sableux :</strong> drainant. Lavandes, cactus, graminées.',loam:'<strong>Sol limoneux :</strong> idéal ! Convient à presque tout.',lime:'<strong>Sol calcaire :</strong> alcalin. Lavandes, clématis.',humus:'<strong>Sol humifère :</strong> riche. Roses, hortensias.',unknown:'<strong>Sol inconnu :</strong> suggestions universelles.'};
+
+var PLANT_DB={
+  'Palmiers 🌴':[
+    {id:'washingtonia',icon:'🌴',name:'Petit Washingtonia',sci:'Washingtonia robusta',soils:['sand','lime'],cat:'Palmiers 🌴',h:[6,15],shape:'tall_fan',fc:[0x3a7c20,0x4a8c28,0x2a6818],tc:0x7a5c28},
+    {id:'washingtonia2',icon:'🌴',name:'Grand Washingtonia',sci:'Washingtonia robusta (grand)',soils:['sand','lime'],cat:'Palmiers 🌴',h:[8,18],shape:'tall_fan',fc:[0x2e6818,0x3e7a20,0x1f5a10],tc:0x5a3a1f},
+    {id:'bambou',icon:'🎋',name:'Bambou',sci:'Phyllostachys',soils:['clay','sand','lime','humus'],cat:'Bambous 🎋',h:[2.75,3.25],shape:'bamboo',fc:[0x2f7a45,0x1f5a2e,0x4caf50],tc:0xd4a017},
+    {id:'laurier',icon:'🌸',name:'Laurier rose',sci:'Nerium oleander',soils:['sand','lime','clay'],cat:'Arbustes 🌿',h:[1.5,2.5],shape:'shrub',fc:[0x2d5a2d,0x1f4d2a,0xec407a],tc:0x6b5842},
+  ],
+  'Arbres 🌳':[
+    {id:'cypress',icon:'🌲',name:'Cyprès',sci:'Cupressus sempervirens',soils:['lime','sand','loam'],cat:'Arbres 🌳',h:[5,12],shape:'columnar',fc:[0x1a3d0f,0x22500f,0x142d0a],tc:0x4a2e10},
+  ]
+};
+
+// Chaque sujet du catalogue charge models/<id>.glb a la demande (plus de base64 embarque).
+// Pour ajouter un sujet (ex: pommier): deposer models/pommier.glb + une ligne dans PLANT_DB ci-dessus.
+for(var _gk in PLANT_DB){
+  PLANT_DB[_gk].forEach(function(p){ GLB_FILES[p.id]='models/'+p.id+'.glb'; });
+}
+
+// Build legacy CAT from PLANT_DB for backward compat
+var CAT={};
+for(var catKey in PLANT_DB){
+  CAT[catKey]=PLANT_DB[catKey].map(function(p){
+    return {id:p.id,icon:p.icon,name:p.name,soils:p.soils};
+  });
+}
+// ============================================================
+// === SMART THEME SYSTEM v2 ===
+// Moteur de génération intelligent par thème
+// Chaque thème définit des RÈGLES (zones + plantes) + DENSITÉ
+// La randomisation est CONTRÔLÉE : positions dans des zones logiques
+// ============================================================
+
+// LEGACY array kept for card display only (icon, name, desc)
+var THEMES=[
+  {id:'zen',name:'Zen',icon:'☯️',desc:'Épuré & méditatif'},
+  {id:'japonais',name:'Japonais',icon:'⛩️',desc:'Sakura & harmonie'},
+  {id:'tropical',name:'Tropical',icon:'🌺',desc:'Exotique & luxuriant'},
+  {id:'mediterr',name:'Méditerranéen',icon:'🫒',desc:'Olivier & lavande'},
+  {id:'moderne',name:'Moderne',icon:'🔷',desc:'Géométrique & épuré'},
+  {id:'anglais',name:'Anglais',icon:'🌹',desc:'Roses & haies'},
+  {id:'desert',name:'Désertique',icon:'🏜️',desc:'Aride & minéral'},
+  {id:'foret',name:'Forêt',icon:'🌲',desc:'Dense & sylvestre'},
+  {id:'romantique',name:'Romantique',icon:'🌸',desc:'Poétique & fleuri'},
+  {id:'bambou',name:'Bambou',icon:'🎋',desc:'Asiatique & vibrant'},
+  {id:'nordique',name:'Nordique',icon:'🌿',desc:'Épuré & naturel'},
+  {id:'contemp',name:'Contemporain',icon:'🏛️',desc:'Design & lignes'},
+  {id:'potager',name:'Potager',icon:'🥕',desc:'Utile & comestible'},
+  {id:'provencal',name:'Provençal',icon:'💜',desc:'Lavande & pierre'},
+  {id:'sauvage',name:'Sauvage',icon:'🌾',desc:'Prairie naturelle'}
+];
+
+// ============================================================
+// THEME BLUEPRINTS — Règles de génération intelligente
+// Structure de chaque blueprint :
+//   layers: zones de placement ordonnées (background → foreground)
+//     - zone: 'back'|'mid'|'front'|'corner'|'center'|'edge'|'scatter'
+//     - types: liste de plantes candidates (on pioche aléatoirement)
+//     - count: [min, max] — nombre d'éléments à placer dans cette zone
+//     - spacing: distance minimale entre 2 objets de cette couche
+//   anchors: éléments fixes (toujours placés, jamais randomisés)
+//     - type: id de la plante/déco
+//     - zone: zone de placement
+//     - weight: priorité de placement (1=center, 2=légèrement décalé)
+//   tod: heure du jour préférée pour le thème ('morning'|'noon'|'evening')
+// ============================================================
+var THEME_BLUEPRINTS = {
+
+  zen: {
+    tod: 'morning',
+    anchors: [
+      {type:'stone', zone:'center', offset:[0.4, 0.2]},
+      {type:'bench', zone:'edge_back'},
+      {type:'path',  zone:'center_path'}
+    ],
+    layers: [
+      {zone:'back_corner', types:['bamboo','bamboo_black'], count:[2,3], spacing:1.8},
+      {zone:'mid_side',    types:['stone','stone','stone'], count:[2,4], spacing:1.2},
+      {zone:'mid',         types:['acer_jap','cycas','box'], count:[1,2], spacing:2.2},
+      {zone:'front',       types:['festuca','sedum','sempervivum'], count:[2,4], spacing:0.9},
+      {zone:'scatter',     types:['stone'], count:[2,3], spacing:1.5}
+    ]
+  },
+
+  japonais: {
+    tod: 'morning',
+    anchors: [
+      {type:'cherry',    zone:'back_left'},
+      {type:'cherry',    zone:'back_right'},
+      {type:'lamp',      zone:'edge_left'},
+      {type:'stone',     zone:'center_offset'}
+    ],
+    layers: [
+      {zone:'back',      types:['bamboo','bamboo_black'], count:[2,4], spacing:1.6},
+      {zone:'mid',       types:['acer_jap','cycas','box'], count:[1,3], spacing:2.0},
+      {zone:'mid_side',  types:['stone','stone'], count:[2,3], spacing:1.4},
+      {zone:'front',     types:['festuca','carex','hosta'], count:[2,4], spacing:1.0},
+      {zone:'edge',      types:['lamp'], count:[1,2], spacing:3.0}
+    ]
+  },
+
+  tropical: {
+    tod: 'noon',
+    anchors: [
+      {type:'phoenix',      zone:'back_center'},
+      {type:'washingtonia', zone:'back_left'},
+      {type:'trachycarpus', zone:'back_right'}
+    ],
+    layers: [
+      {zone:'back',      types:['washingtonia','phoenix','trachycarpus'], count:[2,3], spacing:2.5},
+      {zone:'mid',       types:['fatsia','cordyline','phormium','bamboo'], count:[2,4], spacing:1.8},
+      {zone:'mid_front', types:['agapanthus','dahlia','hellebore'], count:[3,5], spacing:1.2},
+      {zone:'front',     types:['agave','aloe','echeveria'], count:[2,4], spacing:1.0},
+      {zone:'scatter',   types:['flower','dahlia','geranium'], count:[3,5], spacing:0.9}
+    ]
+  },
+
+  mediterr: {
+    tod: 'noon',
+    anchors: [
+      {type:'olive',    zone:'back_left'},
+      {type:'cypress',  zone:'edge_right'},
+      {type:'cypress',  zone:'edge_left'},
+      {type:'bench',    zone:'edge_back'},
+      {type:'stone',    zone:'center_offset'}
+    ],
+    layers: [
+      {zone:'back',      types:['fig','almond','pine_stone'], count:[1,2], spacing:2.5},
+      {zone:'mid',       types:['pittosporum','viburnum','box'], count:[2,3], spacing:1.8},
+      {zone:'mid_front', types:['lavender','lavender','salvia'], count:[3,5], spacing:1.0},
+      {zone:'front',     types:['lavender','agapanthus','rosemary'], count:[3,6], spacing:0.9},
+      {zone:'scatter',   types:['stone','stone','stone'], count:[2,4], spacing:1.2}
+    ]
+  },
+
+  moderne: {
+    tod: 'noon',
+    anchors: [
+      {type:'fountain', zone:'center'},
+      {type:'lamp',     zone:'edge_front_left'},
+      {type:'lamp',     zone:'edge_front_right'},
+      {type:'path',     zone:'center_path'}
+    ],
+    layers: [
+      {zone:'back_sym',  types:['cypress','box','photinia'], count:[2,4], spacing:2.0},
+      {zone:'mid_sym',   types:['box','cordyline','phormium'], count:[2,4], spacing:1.8},
+      {zone:'edge',      types:['lamp','lamp'], count:[2,4], spacing:2.5},
+      {zone:'front',     types:['festuca','carex','agave'], count:[2,4], spacing:1.2},
+      {zone:'corner',    types:['stone','stone'], count:[2,4], spacing:1.5}
+    ]
+  },
+
+  anglais: {
+    tod: 'morning',
+    anchors: [
+      {type:'bench',   zone:'edge_back'},
+      {type:'rose',    zone:'mid_left'},
+      {type:'rose',    zone:'mid_right'}
+    ],
+    layers: [
+      {zone:'back',      types:['tree_round','beech','linden'], count:[2,3], spacing:3.0},
+      {zone:'mid',       types:['rose','hydrangea','viburnum','lilac'], count:[3,5], spacing:1.6},
+      {zone:'mid_front', types:['rose','mock_orange','weigela'], count:[2,4], spacing:1.4},
+      {zone:'front',     types:['peony','iris','phlox','daylily'], count:[3,6], spacing:0.9},
+      {zone:'edge',      types:['bush','box','photinia'], count:[3,5], spacing:1.5}
+    ]
+  },
+
+  desert: {
+    tod: 'noon',
+    anchors: [
+      {type:'stone',   zone:'center'},
+      {type:'stone',   zone:'mid_left'},
+      {type:'stone',   zone:'mid_right'}
+    ],
+    layers: [
+      {zone:'back',      types:['yucca','agave','opuntia'], count:[2,3], spacing:2.0},
+      {zone:'mid',       types:['cactus','agave','opuntia','yucca'], count:[3,5], spacing:1.5},
+      {zone:'mid_front', types:['sedum','sempervivum','echeveria'], count:[3,5], spacing:1.0},
+      {zone:'front',     types:['stone','stone'], count:[3,5], spacing:1.0},
+      {zone:'scatter',   types:['stone','stone','cactus'], count:[3,5], spacing:1.2}
+    ]
+  },
+
+  foret: {
+    tod: 'morning',
+    anchors: [],
+    layers: [
+      {zone:'back',      types:['tree_pine','cedar','beech'], count:[3,5], spacing:2.5},
+      {zone:'mid',       types:['tree_pine','birch','maple'], count:[2,4], spacing:2.2},
+      {zone:'mid_side',  types:['rhododendron','viburnum','bush'], count:[2,4], spacing:1.6},
+      {zone:'front',     types:['fern','hosta','hellebore'], count:[3,5], spacing:1.0},
+      {zone:'scatter',   types:['stone','stone'], count:[2,3], spacing:1.5}
+    ]
+  },
+
+  romantique: {
+    tod: 'morning',
+    anchors: [
+      {type:'bench', zone:'edge_back'},
+      {type:'lamp',  zone:'mid_left'},
+      {type:'rose',  zone:'center_offset'}
+    ],
+    layers: [
+      {zone:'back',      types:['cherry','cherry_tree','magnolia'], count:[2,3], spacing:2.5},
+      {zone:'mid',       types:['rose','lilac','mock_orange','hydrangea'], count:[3,5], spacing:1.6},
+      {zone:'mid_front', types:['peony','dahlia','rose','phlox'], count:[4,6], spacing:1.0},
+      {zone:'front',     types:['lavender','iris','geranium','poppy'], count:[3,6], spacing:0.8},
+      {zone:'edge',      types:['wisteria','clematis'], count:[1,2], spacing:2.5}
+    ]
+  },
+
+  bambou: {
+    tod: 'morning',
+    anchors: [
+      {type:'stone', zone:'center'},
+      {type:'bench', zone:'edge_back'}
+    ],
+    layers: [
+      {zone:'back',      types:['bamboo','bamboo_black'], count:[4,6], spacing:1.5},
+      {zone:'mid',       types:['bamboo','bamboo_black','acer_jap'], count:[3,5], spacing:1.4},
+      {zone:'mid_front', types:['festuca','carex','miscanthus'], count:[2,4], spacing:1.2},
+      {zone:'front',     types:['stone','hosta'], count:[2,4], spacing:1.0},
+      {zone:'scatter',   types:['carex','festuca'], count:[2,3], spacing:0.9}
+    ]
+  },
+
+  nordique: {
+    tod: 'morning',
+    anchors: [
+      {type:'stone', zone:'mid_left'},
+      {type:'stone', zone:'mid_right'}
+    ],
+    layers: [
+      {zone:'back',      types:['tree_pine','birch','cedar'], count:[3,5], spacing:2.5},
+      {zone:'mid',       types:['tree_pine','birch'], count:[2,3], spacing:2.2},
+      {zone:'mid_front', types:['rhododendron','viburnum','bush'], count:[2,4], spacing:1.6},
+      {zone:'front',     types:['miscanthus','festuca','stipa'], count:[2,4], spacing:1.0},
+      {zone:'scatter',   types:['stone'], count:[2,4], spacing:1.2}
+    ]
+  },
+
+  contemp: {
+    tod: 'noon',
+    anchors: [
+      {type:'fountain', zone:'center'},
+      {type:'path',     zone:'center_path'},
+      {type:'lamp',     zone:'edge_front_left'},
+      {type:'lamp',     zone:'edge_front_right'}
+    ],
+    layers: [
+      {zone:'back_sym',  types:['cypress','photinia','box'], count:[3,5], spacing:1.8},
+      {zone:'mid_sym',   types:['phormium','cordyline','agave'], count:[2,4], spacing:2.0},
+      {zone:'edge',      types:['lamp'], count:[2,4], spacing:2.5},
+      {zone:'front',     types:['festuca','carex','agave'], count:[2,4], spacing:1.2},
+      {zone:'corner',    types:['stone'], count:[2,4], spacing:1.5}
+    ]
+  },
+
+  potager: {
+    tod: 'morning',
+    anchors: [
+      {type:'bench', zone:'edge_back'},
+      {type:'fence', zone:'edge_right'},
+      {type:'fence', zone:'edge_left'}
+    ],
+    layers: [
+      {zone:'back',      types:['apple','fig','almond'], count:[2,3], spacing:2.5},
+      {zone:'mid',       types:['bush','spirea','abelia'], count:[2,4], spacing:1.6},
+      {zone:'mid_front', types:['lavender','salvia','echinacea'], count:[3,5], spacing:1.0},
+      {zone:'front',     types:['iris','geranium','rudbeckia','allium'], count:[3,6], spacing:0.9},
+      {zone:'scatter',   types:['stone'], count:[2,3], spacing:1.2}
+    ]
+  },
+
+  provencal: {
+    tod: 'noon',
+    anchors: [
+      {type:'olive',  zone:'back_center'},
+      {type:'bench',  zone:'edge_back'},
+      {type:'stone',  zone:'mid_left'},
+      {type:'stone',  zone:'center_offset'}
+    ],
+    layers: [
+      {zone:'back',      types:['cypress','fig','almond'], count:[1,3], spacing:2.5},
+      {zone:'mid',       types:['pittosporum','viburnum','box'], count:[2,3], spacing:1.8},
+      {zone:'mid_front', types:['lavender','lavender','salvia'], count:[4,7], spacing:0.9},
+      {zone:'front',     types:['lavender','iris','geranium'], count:[3,6], spacing:0.8},
+      {zone:'scatter',   types:['stone','stone'], count:[3,5], spacing:1.0}
+    ]
+  },
+
+  sauvage: {
+    tod: 'morning',
+    anchors: [],
+    layers: [
+      {zone:'back',      types:['tree_round','beech','birch'], count:[2,3], spacing:3.0},
+      {zone:'mid',       types:['bush','viburnum','buddleia'], count:[3,5], spacing:1.8},
+      {zone:'mid_front', types:['miscanthus','cortaderia','stipa','pennisetum'], count:[3,5], spacing:1.2},
+      {zone:'front',     types:['rudbeckia','echinacea','poppy','coreopsis'], count:[4,7], spacing:0.8},
+      {zone:'scatter',   types:['allium','iris','salvia','aster'], count:[3,6], spacing:0.8}
+    ]
+  }
+};
+
+// ============================================================
+// SMART PLACEMENT ENGINE
+// Génère des positions x,z dans des zones nommées du terrain
+// Garantit non-overlap via une grille de réservation
+// ============================================================
+function smartGenerate(blueprintId) {
+  var bp = THEME_BLUEPRINTS[blueprintId];
+  if (!bp) return [];
+
+  var L = S.dimL, W = S.dimW;
+  var hL = L/2 - 0.7, hW = W/2 - 0.7;
+
+  // Grille de réservation anti-overlap
+  var reserved = [];
+  function isOccupied(x, z, minDist) {
+    for (var i = 0; i < reserved.length; i++) {
+      var dx = reserved[i].x - x, dz = reserved[i].z - z;
+      if (Math.sqrt(dx*dx + dz*dz) < minDist) return true;
+    }
+    return false;
+  }
+  function reserve(x, z) { reserved.push({x:x, z:z}); }
+
+  // Génère une position dans une zone nommée, avec jitter contrôlé
+  function posForZone(zone, attempt) {
+    var jx = (Math.random() - 0.5) * 0.7;
+    var jz = (Math.random() - 0.5) * 0.5;
+    var variant = attempt || 0;
+    var angle = (variant * 137.5) * Math.PI / 180; // Fibonacci angle spread
+
+    switch(zone) {
+      case 'center':         return {x: jx*0.4,      z: jz*0.4};
+      case 'center_offset':  return {x: (Math.random()-0.5)*1.5, z: (Math.random()-0.5)*1.2};
+      case 'center_path':    return {x: (Math.random()-0.5)*0.8, z: (Math.random()-0.5)*hW*0.5};
+      case 'back':           return {x: (Math.random()-0.5)*hL*1.6, z: -(hW*0.5 + Math.random()*hW*0.45)};
+      case 'back_center':    return {x: (Math.random()-0.5)*hL*0.6, z: -hW*0.65 + jz*0.3};
+      case 'back_left':      return {x: -hL*0.5 - Math.random()*hL*0.3 + jx, z: -hW*0.5 - Math.random()*hW*0.3 + jz};
+      case 'back_right':     return {x:  hL*0.5 + Math.random()*hL*0.3 + jx, z: -hW*0.5 - Math.random()*hW*0.3 + jz};
+      case 'back_corner':    return {x: (Math.random()>.5?1:-1)*(hL*0.55+Math.random()*hL*0.3), z: -(hW*0.5+Math.random()*hW*0.35)};
+      case 'back_sym':       return {x: (attempt%2===0?1:-1)*(hL*0.3+Math.random()*hL*0.35), z: -(hW*0.35+Math.random()*hW*0.4)};
+      case 'mid':            return {x: (Math.random()-0.5)*hL*1.4, z: (Math.random()-0.5)*hW*0.7};
+      case 'mid_left':       return {x: -(hL*0.3 + Math.random()*hL*0.4) + jx, z: (Math.random()-0.5)*hW*0.8};
+      case 'mid_right':      return {x:  (hL*0.3 + Math.random()*hL*0.4) + jx, z: (Math.random()-0.5)*hW*0.8};
+      case 'mid_side':       return {x: (Math.random()>.5?1:-1)*(hL*0.35+Math.random()*hL*0.4), z: (Math.random()-0.5)*hW*0.9};
+      case 'mid_sym':        return {x: (attempt%2===0?1:-1)*(hL*0.25+Math.random()*hL*0.3), z: (Math.random()-0.5)*hW*0.5};
+      case 'mid_front':      return {x: (Math.random()-0.5)*hL*1.5, z: hW*0.1 + Math.random()*hW*0.5};
+      case 'front':          return {x: (Math.random()-0.5)*hL*1.6, z: hW*0.35 + Math.random()*hW*0.45};
+      case 'edge':           return {x: (Math.random()>.5?1:-1)*(hL*0.65+Math.random()*hL*0.25), z: (Math.random()-0.5)*hW*1.2};
+      case 'edge_back':      return {x: (Math.random()-0.5)*hL*1.0, z: -(hW*0.7+Math.random()*hW*0.2)};
+      case 'edge_left':      return {x: -(hL*0.7+Math.random()*hL*0.2), z: (Math.random()-0.5)*hW*1.0};
+      case 'edge_right':     return {x:  (hL*0.7+Math.random()*hL*0.2), z: (Math.random()-0.5)*hW*1.0};
+      case 'edge_front_left':  return {x: -(hL*0.5+Math.random()*hL*0.2), z:  hW*0.5+Math.random()*hW*0.25};
+      case 'edge_front_right': return {x:  (hL*0.5+Math.random()*hL*0.2), z:  hW*0.5+Math.random()*hW*0.25};
+      case 'corner':         return {x: (Math.random()>.5?1:-1)*(hL*0.55+Math.random()*hL*0.3), z: (Math.random()>.5?1:-1)*(hW*0.5+Math.random()*hW*0.3)};
+      case 'scatter':
+      default:
+        // Distribution Fibonacci pour bon espacement naturel
+        var r = Math.sqrt((attempt+0.5)/(Math.max(1,reserved.length+5))) * Math.min(hL, hW) * 0.9;
+        return {x: Math.cos(angle)*r + jx*0.5, z: Math.sin(angle)*r + jz*0.5};
+    }
+  }
+
+  // Clamp dans les limites du terrain
+  function clamp(pos) {
+    return {
+      x: Math.max(-hL, Math.min(hL, pos.x)),
+      z: Math.max(-hW, Math.min(hW, pos.z))
+    };
+  }
+
+  var items = [];
+
+  // 1. Place les anchors (éléments fixes structurants)
+  if (bp.anchors) {
+    bp.anchors.forEach(function(anchor, idx) {
+      for (var attempt = 0; attempt < 12; attempt++) {
+        var raw = posForZone(anchor.zone, idx + attempt*3);
+        var pos = clamp(raw);
+        var spacing = 1.2;
+        if (!isOccupied(pos.x, pos.z, spacing)) {
+          reserve(pos.x, pos.z);
+          items.push({type: anchor.type, x: pos.x, z: pos.z, rot: (Math.random()-0.5)*0.4});
+          break;
+        }
+      }
+    });
+  }
+
+  // 2. Place les layers (végétation par zone, count aléatoire dans [min,max])
+  bp.layers.forEach(function(layer) {
+    var count = layer.count[0] + Math.floor(Math.random() * (layer.count[1] - layer.count[0] + 1));
+    var placed = 0;
+    var maxAttempts = count * 15;
+    var attempt = 0;
+
+    while (placed < count && attempt < maxAttempts) {
+      var typeIdx = Math.floor(Math.random() * layer.types.length);
+      var type = layer.types[typeIdx];
+      var raw = posForZone(layer.zone, attempt);
+      var pos = clamp(raw);
+      var spacing = layer.spacing || 1.2;
+
+      if (!isOccupied(pos.x, pos.z, spacing)) {
+        reserve(pos.x, pos.z);
+        var rot = Math.random() * Math.PI * 2;
+        items.push({type: type, x: pos.x, z: pos.z, rot: rot});
+        placed++;
+      }
+      attempt++;
+    }
+  });
+
+  return items;
+}
+
+var PHOTO_SLOTS=[
+  {id:'pan',icon:'🌅',label:'Vue panoramique',hint:'Depuis le centre',req:true},
+  {id:'left',icon:'◀️',label:'Côté gauche',hint:'Depuis la gauche',req:true},
+  {id:'right',icon:'▶️',label:'Côté droit',hint:'Depuis la droite',req:true},
+  {id:'back',icon:'🔙',label:'Depuis le fond',hint:'Vers l\'entrée',req:true},
+  {id:'front',icon:'🚪',label:'Depuis l\'entrée',hint:'Vers le fond',req:true},
+  {id:'top',icon:'🚁',label:'Vue en hauteur',hint:'Balcon ou drone',req:false},
+  {id:'slope',icon:'⛰️',label:'Terrain en pente',hint:'Depuis le bas',req:false}
+];
+
+// ============================================================
+// === THREE.JS — VARIABLES GLOBALES ===
+// ============================================================
+var scene, camera, renderer, raycaster, mousePt;
+var groundMesh, groundBorder, gridMesh, grassInstances;
+var gridVisible = true;
+var sunLight, ambientLight, fillLight, hemiLight;
+
+var TOD_PRESETS={
+  morning:{bg:0x87ceeb,fogC:0xb8daf0,fogD:.010,ambC:0xe8f4ff,ambI:.75,sunC:0xfff4d0,sunI:1.6,sunX:-25,sunY:22,sunZ:18,fillC:0xc8e0ff,fillI:.4,hSky:0x87ceeb,hGnd:0x4a6741,hI:.7,exp:1.15},
+  noon:{bg:0x5ba3d9,fogC:0x8ec8f0,fogD:.008,ambC:0xffffff,ambI:.9,sunC:0xffffff,sunI:2.0,sunX:5,sunY:50,sunZ:5,fillC:0xd0e8ff,fillI:.35,hSky:0x5ba3d9,hGnd:0x4a7a3a,hI:.8,exp:1.25},
+  evening:{bg:0x1a0e0a,fogC:0x3a1808,fogD:.016,ambC:0xffd0a0,ambI:.55,sunC:0xff6820,sunI:1.2,sunX:22,sunY:10,sunZ:-18,fillC:0x8040a0,fillI:.25,hSky:0x4a1a00,hGnd:0x1a0a00,hI:.55,exp:1.05}
+};
+
+// ============================================================
+// === TAILLES NORMALISÉES DES ARBRES (en mètres-monde) ===
+// Toutes les hauteurs sont exprimées en unités Three.js = mètres
+// pin : 3–4 m | chêne : 4–6 m | palmier : 6–9 m MAX
+// cerisier : 2.5–4 m | olivier : 2–3 m
+// ============================================================
+var TREE_HEIGHTS = {
+  washingtonia:{min: 2.0, max: 2.5},
+  washingtonia2:{min: 3.5, max: 4.0},
+  cypress:{min: 3.0, max: 6.0},
+  bambou:{min: 2.75, max: 3.25},
+  laurier:{min: 1.5, max: 2.5}
+};
+
+// ============================================================
+// === TOD (Heure du jour) ===
+// ============================================================
+function setTOD(tod){
+  if(!scene)return;
+  var p=TOD_PRESETS[tod];if(!p)return;
+  document.querySelectorAll('.tod-btn').forEach(function(b){b.classList.remove('active');});
+  var btn=document.getElementById('tod-'+tod);if(btn)btn.classList.add('active');
+  var F=40,f=0;
+  var FROM={bgR:scene.background.r,bgG:scene.background.g,bgB:scene.background.b,fogR:scene.fog.color.r,fogG:scene.fog.color.g,fogB:scene.fog.color.b,fogD:scene.fog.density,ambI:ambientLight.intensity,sunI:sunLight.intensity,fillI:fillLight.intensity,hI:hemiLight.intensity,exp:renderer.toneMappingExposure};
+  var TB=new THREE.Color(p.bg),TF=new THREE.Color(p.fogC),TA=new THREE.Color(p.ambC),TS=new THREE.Color(p.sunC),TFL=new THREE.Color(p.fillC),THS=new THREE.Color(p.hSky),THG=new THREE.Color(p.hGnd);
+  function step(){
+    f++;var t=f/F,e=t<.5?2*t*t:-1+(4-2*t)*t;
+    scene.background.setRGB(FROM.bgR+(TB.r-FROM.bgR)*e,FROM.bgG+(TB.g-FROM.bgG)*e,FROM.bgB+(TB.b-FROM.bgB)*e);
+    scene.fog.color.setRGB(FROM.fogR+(TF.r-FROM.fogR)*e,FROM.fogG+(TF.g-FROM.fogG)*e,FROM.fogB+(TF.b-FROM.fogB)*e);
+    scene.fog.density=FROM.fogD+(p.fogD-FROM.fogD)*e;
+    ambientLight.color.lerp(TA,e);ambientLight.intensity=FROM.ambI+(p.ambI-FROM.ambI)*e;
+    sunLight.color.lerp(TS,e);sunLight.intensity=FROM.sunI+(p.sunI-FROM.sunI)*e;
+    sunLight.position.lerp(new THREE.Vector3(p.sunX,p.sunY,p.sunZ),e);
+    fillLight.color.lerp(TFL,e);fillLight.intensity=FROM.fillI+(p.fillI-FROM.fillI)*e;
+    hemiLight.color.lerp(THS,e);hemiLight.groundColor.lerp(THG,e);hemiLight.intensity=FROM.hI+(p.hI-FROM.hI)*e;
+    renderer.toneMappingExposure=FROM.exp+(p.exp-FROM.exp)*e;
+    if(f<F)requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+  toast({morning:'Matin',noon:'Midi',evening:'Soir'}[tod]+' — éclairage appliqué');
+}
+
+// ============================================================
+// === INIT THREE.JS ===
+// ============================================================
+function initThree(){
+  scene=new THREE.Scene();
+  var pm=TOD_PRESETS.morning;
+  scene.background=new THREE.Color(pm.bg);
+  scene.fog=new THREE.FogExp2(pm.fogC,pm.fogD);
+  camera=new THREE.PerspectiveCamera(52,window.innerWidth/window.innerHeight,.1,400);
+  renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.shadowMap.enabled=true;
+  renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  renderer.toneMapping=THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure=pm.exp;
+  renderer.setSize(window.innerWidth,window.innerHeight);
+  document.getElementById('canvas-wrap').appendChild(renderer.domElement);
+  hemiLight=new THREE.HemisphereLight(pm.hSky,pm.hGnd,pm.hI);scene.add(hemiLight);
+  ambientLight=new THREE.AmbientLight(pm.ambC,pm.ambI);scene.add(ambientLight);
+  sunLight=new THREE.DirectionalLight(pm.sunC,pm.sunI);
+  sunLight.position.set(pm.sunX,pm.sunY,pm.sunZ);
+  sunLight.castShadow=true;
+  sunLight.shadow.mapSize.width=sunLight.shadow.mapSize.height=2048;
+  Object.assign(sunLight.shadow.camera,{near:1,far:160,left:-40,right:40,top:40,bottom:-40});
+  sunLight.shadow.bias=-.0003;
+  scene.add(sunLight);
+  fillLight=new THREE.DirectionalLight(pm.fillC,pm.fillI);
+  fillLight.position.set(20,20,-20);
+  scene.add(fillLight);
+  rebuildGround();
+  raycaster=new THREE.Raycaster();
+  mousePt=new THREE.Vector2();
+  attachEvents();
+  resetCam();
+  animate();
+}
+
+// ============================================================
+// === SOL RÉALISTE + HERBE DENSE ===
+// Correction majeure : sol avec variation de couleur + heightmap + herbe instanciée
+// ============================================================
+function rebuildGround(){
+  // Nettoyage scène
+  if(groundMesh){scene.remove(groundMesh);groundMesh.geometry.dispose();groundMesh.material.dispose();groundMesh=null;}
+  if(groundBorder){scene.remove(groundBorder);groundBorder=null;}
+  if(gridMesh){scene.remove(gridMesh);gridMesh.geometry.dispose();gridMesh=null;}
+  if(grassInstances){scene.remove(grassInstances);grassInstances.geometry.dispose();grassInstances.material.dispose();grassInstances=null;}
+
+  var L=S.dimL, W=S.dimW;
+
+  // --- 1. SOL AVEC RELIEF PROCÉDURAL ---
+  // On utilise un PlaneGeometry segmenté pour les micro-bosses
+  var segsL=Math.max(20, Math.round(L*3));
+  var segsW=Math.max(20, Math.round(W*3));
+  var groundGeo=new THREE.PlaneGeometry(L,W,segsL,segsW);
+  groundGeo.rotateX(-Math.PI/2);
+
+  // Couleurs de base selon le type de sol
+  var soilBase={
+    clay:{base:0x7a5230,mid:0x6b4226,dry:0x5a3518},
+    sand:{base:0xd4a85a,mid:0xc9a040,dry:0xb08030},
+    loam:{base:0x4a6a30,mid:0x3d5e28,dry:0x527a38},
+    lime:{base:0x9a9a88,mid:0x8a8a78,dry:0x7a8070},
+    humus:{base:0x2e3a1a,mid:0x3a4a22,dry:0x253018},
+    unknown:{base:0x4a6030,mid:0x3d5228,dry:0x527838}
+  };
+  var sc=soilBase[S.soil]||soilBase.loam;
+
+  // Déformation verticale des vertices (micro-terrain)
+  var positions=groundGeo.attributes.position;
+  var uvAttr=groundGeo.attributes.uv;
+  var colors=[];
+  var c1=new THREE.Color(sc.base);
+  var c2=new THREE.Color(sc.mid);
+  var c3=new THREE.Color(sc.dry);
+
+  for(var i=0;i<positions.count;i++){
+    var x=positions.getX(i);
+    var z=positions.getZ(i);
+    // Bruit multi-octave pseudo-aléatoire (pas de lib externe)
+    var nx=x/L*4, nz=z/W*4;
+    var h = noise2d(nx,nz)*0.08
+           +noise2d(nx*3.1,nz*2.7)*0.03
+           +noise2d(nx*7.0,nz*6.5)*0.008;
+    positions.setY(i,h);
+    // Couleur variée selon position + bruit
+    var t=Math.max(0,Math.min(1,(h+0.1)/0.2));
+    var tc=new THREE.Color();
+    if(t<0.5) tc.lerpColors(c2,c1,t*2);
+    else tc.lerpColors(c1,c3,(t-0.5)*2);
+    // Légère variation aléatoire de ton
+    var jitter=(Math.sin(x*7.3+z*3.1)*0.5+0.5)*0.06-0.03;
+    tc.r=Math.max(0,Math.min(1,tc.r+jitter));
+    tc.g=Math.max(0,Math.min(1,tc.g+jitter*0.5));
+    colors.push(tc.r,tc.g,tc.b);
+  }
+  groundGeo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  positions.needsUpdate=true;
+  groundGeo.computeVertexNormals();
+
+  var groundMat=new THREE.MeshLambertMaterial({vertexColors:true});
+  groundMesh=new THREE.Mesh(groundGeo,groundMat);
+  groundMesh.receiveShadow=true;
+  groundMesh.userData.isGround=true;
+  scene.add(groundMesh);
+
+  // --- 2. BORDURE DU TERRAIN ---
+  var eg=new THREE.EdgesGeometry(new THREE.BoxGeometry(L,.02,W));
+  groundBorder=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0x6ee7b7,opacity:.45,transparent:true}));
+  groundBorder.position.y=.01;
+  scene.add(groundBorder);
+
+  // --- 3. GRILLE EXACTE (1m × 1m, calée sur les dimensions) ---
+  // CORRECTION : la grille ne dépasse jamais les limites du terrain
+  var gridGeo=new THREE.BufferGeometry();
+  var verts=[];
+  var hL=L/2, hW=W/2;
+  for(var xi=-hL;xi<=hL+0.001;xi+=1){
+    verts.push(xi,0.012,-hW, xi,0.012,hW);
+  }
+  for(var zi=-hW;zi<=hW+0.001;zi+=1){
+    verts.push(-hL,0.012,zi, hL,0.012,zi);
+  }
+  gridGeo.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+  gridMesh=new THREE.LineSegments(gridGeo,new THREE.LineBasicMaterial({color:0x2d3d25,opacity:.42,transparent:true}));
+  gridMesh.visible=gridVisible;
+  scene.add(gridMesh);
+
+  // --- 4. HERBE DENSE PAR INSTANCIATION ---
+  buildDenseGrass(L,W);
+}
+
+// ============================================================
+// === BRUIT 2D PSEUDO-ALÉATOIRE (sans lib externe) ===
+// Implémentation d'un Simplex-like via tables de permutation
+// ============================================================
+var _permTable=null;
+function initPerm(){
+  if(_permTable)return;
+  _permTable=[];
+  for(var i=0;i<256;i++)_permTable[i]=i;
+  for(var i=255;i>0;i--){var j=Math.floor(seededRand(i)*256)%256;var t=_permTable[i];_permTable[i]=_permTable[j];_permTable[j]=t;}
+}
+var _sr=42;
+function seededRand(seed){_sr=(seed*1664525+1013904223)&0xffffffff;return(_sr>>>0)/4294967296;}
+function fade(t){return t*t*t*(t*(t*6-15)+10);}
+function lerp(a,b,t){return a+(b-a)*t;}
+function grad2(h,x,y){h=h&3;var u=h<2?x:y,v=h<2?y:x;return((h&1)?-u:u)+((h&2)?-v:v);}
+function noise2d(x,y){
+  initPerm();
+  var X=Math.floor(x)&255,Y=Math.floor(y)&255;
+  x-=Math.floor(x);y-=Math.floor(y);
+  var u=fade(x),v=fade(y);
+  var p=_permTable;
+  var A=p[X]+Y,B=p[X+1]+Y;
+  return lerp(lerp(grad2(p[A&255],x,y),grad2(p[B&255],x-1,y),u),
+              lerp(grad2(p[(A+1)&255],x,y-1),grad2(p[(B+1)&255],x-1,y-1),u),v);
+}
+
+// ============================================================
+// === HERBE DENSE PAR INSTANCIATION ===
+// ~2000 brins d'herbe uniformément répartis sur tout le terrain
+// Optimisé : InstancedMesh (1 seul draw call)
+// ============================================================
+function buildDenseGrass(L,W){
+  // Couleurs herbe
+  var grassColors=[
+    new THREE.Color(0x5aaa2a),
+    new THREE.Color(0x6abb35),
+    new THREE.Color(0x4a9820),
+    new THREE.Color(0x7acc45),
+    new THREE.Color(0x3d8818),
+    new THREE.Color(0x88cc50),
+    new THREE.Color(0x558822)
+  ];
+
+  // Géométrie d'un brin : triangle fin orienté vers le haut
+  var bladeH=rnd(0.18,0.36);
+  var bladeGeo=new THREE.BufferGeometry();
+  var bv=[
+    -0.025,0,0,
+     0.025,0,0,
+     0,bladeH,0
+  ];
+  var bn=[0,0,1, 0,0,1, 0,0,1];
+  var bi=[0,1,2];
+  bladeGeo.setAttribute('position',new THREE.Float32BufferAttribute(bv,3));
+  bladeGeo.setAttribute('normal',new THREE.Float32BufferAttribute(bn,3));
+  bladeGeo.setIndex(bi);
+  bladeGeo.computeVertexNormals();
+
+  // Nombre de brins selon la taille du terrain (densité ~25 brins/m²)
+  var area=L*W;
+  var count=Math.min(6000, Math.round(area*25));
+
+  var bladeMat=new THREE.MeshLambertMaterial({
+    color:0x5aaa2a,
+    vertexColors:false,
+    side:THREE.DoubleSide
+  });
+
+  grassInstances=new THREE.InstancedMesh(bladeGeo,bladeMat,count);
+  grassInstances.castShadow=false;
+  grassInstances.receiveShadow=true;
+
+  var dummy=new THREE.Object3D();
+  var hL=L/2-0.05, hW=W/2-0.05;
+  var colorAttr=new Float32Array(count*3);
+
+  for(var i=0;i<count;i++){
+    var bx=(Math.random()-0.5)*L*0.98;
+    var bz=(Math.random()-0.5)*W*0.98;
+    // Hauteur du terrain sous ce brin
+    var nx=bx/L*4, nz=bz/W*4;
+    var hy=noise2d(nx,nz)*0.08+noise2d(nx*3.1,nz*2.7)*0.03;
+
+    dummy.position.set(bx, hy, bz);
+    dummy.rotation.set(
+      (Math.random()-0.5)*0.3,
+      Math.random()*Math.PI*2,
+      (Math.random()-0.5)*0.25
+    );
+    var scH=0.7+Math.random()*0.7;
+    dummy.scale.set(0.8+Math.random()*0.4, scH, 0.8+Math.random()*0.4);
+    dummy.updateMatrix();
+    grassInstances.setMatrixAt(i,dummy.matrix);
+
+    // Couleur par instance
+    var col=grassColors[Math.floor(Math.random()*grassColors.length)];
+    colorAttr[i*3]=col.r;
+    colorAttr[i*3+1]=col.g;
+    colorAttr[i*3+2]=col.b;
+    grassInstances.setColorAt(i,col);
+  }
+  if(grassInstances.instanceColor) grassInstances.instanceColor.needsUpdate=true;
+  grassInstances.instanceMatrix.needsUpdate=true;
+  scene.add(grassInstances);
+}
+
+// ============================================================
+// === CAMÉRA ===
+// ============================================================
+var cam={theta:Math.PI/5,phi:Math.PI/3.5,r:22,tx:0,ty:0,tz:0};
+function syncCam(){camera.position.set(cam.tx+cam.r*Math.sin(cam.phi)*Math.sin(cam.theta),cam.ty+cam.r*Math.cos(cam.phi),cam.tz+cam.r*Math.sin(cam.phi)*Math.cos(cam.theta));camera.lookAt(cam.tx,cam.ty,cam.tz);}
+function resetCam(){cam.theta=Math.PI/5;cam.phi=Math.PI/3.5;cam.r=Math.max(S.dimL,S.dimW)*2.4;cam.tx=cam.ty=cam.tz=0;syncCam();}
+function topView(){cam.phi=.06;cam.r=Math.max(S.dimL,S.dimW)*1.9;syncCam();}
+
+
+// ============================================================
+// === INSTANCED MESH SYSTEM ===
+// 300+ plantes à 60 FPS grâce à 1 draw call par espèce.
+// ============================================================
+var INST = {};       // type → pool
+var INST_MAX = 500;  // max instances par espèce
+var INST_LIST = [];  // [{type,idx,x,z,sc,rot,groundY}] — all placed instances
+var _tmpMat4 = new THREE.Matrix4();
+var _tmpPos = new THREE.Vector3();
+var _tmpQuat = new THREE.Quaternion();
+var _tmpSc  = new THREE.Vector3();
+
+// Prepare a pool for a given type from a loaded & colored GLB group.
+// Merges all child meshes into one BufferGeometry, bakes transforms,
+// and creates the InstancedMesh.
+function instPrepare(type, group) {
+  if (INST[type]) return; // already prepared
+  // Collect all mesh geometries
+  var geos = [], mats = [];
+  group.updateMatrixWorld(true);
+  group.traverse(function(o) {
+    if (o.isMesh && o.geometry) {
+      // Clone geometry and apply world matrix to bake transforms
+      var g = o.geometry.clone();
+      g.applyMatrix4(o.matrixWorld);
+      geos.push(g);
+      mats.push(o.material);
+    }
+  });
+  if (!geos.length) return;
+
+  // Merge geometries (most Meshy GLBs have 1 mesh, but handle multi)
+  var mergedGeo, mergedMat;
+  if (geos.length === 1) {
+    mergedGeo = geos[0];
+    mergedMat = mats[0];
+  } else {
+    // Simple merge: combine position/color/normal/index buffers
+    var totalVerts = 0, totalIdx = 0;
+    for (var i = 0; i < geos.length; i++) {
+      totalVerts += geos[i].attributes.position.count;
+      if (geos[i].index) totalIdx += geos[i].index.count;
+    }
+    var mPos = new Float32Array(totalVerts * 3);
+    var mCol = geos[0].attributes.color ? new Float32Array(totalVerts * 3) : null;
+    var mNrm = geos[0].attributes.normal ? new Float32Array(totalVerts * 3) : null;
+    var mIdx = totalIdx > 0 ? new Uint32Array(totalIdx) : null;
+    var vOff = 0, iOff = 0, vBase = 0;
+    for (var i = 0; i < geos.length; i++) {
+      var p = geos[i].attributes.position.array;
+      mPos.set(p, vOff * 3);
+      if (mCol && geos[i].attributes.color) mCol.set(geos[i].attributes.color.array, vOff * 3);
+      if (mNrm && geos[i].attributes.normal) mNrm.set(geos[i].attributes.normal.array, vOff * 3);
+      if (mIdx && geos[i].index) {
+        var idx = geos[i].index.array;
+        for (var j = 0; j < idx.length; j++) mIdx[iOff + j] = idx[j] + vBase;
+        iOff += idx.length;
+      }
+      vBase += geos[i].attributes.position.count;
+      vOff += geos[i].attributes.position.count;
+    }
+    mergedGeo = new THREE.BufferGeometry();
+    mergedGeo.setAttribute('position', new THREE.BufferAttribute(mPos, 3));
+    if (mCol) mergedGeo.setAttribute('color', new THREE.BufferAttribute(mCol, 3));
+    if (mNrm) mergedGeo.setAttribute('normal', new THREE.BufferAttribute(mNrm, 3));
+    if (mIdx) mergedGeo.setIndex(new THREE.BufferAttribute(mIdx, 1));
+    mergedMat = mats[0];
+  }
+
+  // Create InstancedMesh
+  var im = new THREE.InstancedMesh(mergedGeo, mergedMat, INST_MAX);
+  im.count = 0; // no instances yet
+  im.castShadow = true;
+  im.receiveShadow = true;
+  im.userData._instType = type;
+  // Frustum culling: set a huge bounding sphere so Three.js never
+  // culls the InstancedMesh (instances are spread over the garden).
+  mergedGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0,0,0), 9999);
+  scene.add(im);
+
+  INST[type] = {
+    mesh: im,
+    geo: mergedGeo,
+    mat: mergedMat,
+    slots: [],    // [ {x,z,sc,rot,active} ] indexed by instance slot
+    freeSlots: [] // recycled slot indices
+  };
+}
+
+// Place a new instance. Returns the instance record.
+function instPlace(type, x, z, sc, rot) {
+  var pool = INST[type];
+  if (!pool) return null;
+  sc = sc || 1;
+  rot = rot || 0;
+
+  // Get a slot (reuse freed slot or allocate new)
+  var idx;
+  if (pool.freeSlots.length > 0) {
+    idx = pool.freeSlots.pop();
+  } else {
+    idx = pool.mesh.count;
+    if (idx >= INST_MAX) {
+      console.warn('Instance limit reached for', type);
+      return null;
+    }
+    pool.mesh.count = idx + 1;
+  }
+
+  // Compute random height
+  var hRange = TREE_HEIGHTS[type] || {min: 1.5, max: 2.0};
+  var targetH = hRange.min + Math.random() * (hRange.max - hRange.min);
+
+  var rec = {type: type, idx: idx, x: x, z: z, sc: sc, rot: rot, targetH: targetH, active: true};
+  pool.slots[idx] = rec;
+
+  // Set instance matrix
+  instUpdateMatrix(pool, idx);
+
+  pool.mesh.instanceMatrix.needsUpdate = true;
+  INST_LIST.push(rec);
+  return rec;
+}
+
+function instUpdateMatrix(pool, idx) {
+  var rec = pool.slots[idx];
+  if (!rec || !rec.active) return;
+  var s = rec.targetH * (rec.sc || 1);
+  _tmpMat4.compose(
+    _tmpPos.set(rec.x, 0, rec.z),
+    _tmpQuat.setFromAxisAngle(new THREE.Vector3(0,1,0), rec.rot || 0),
+    _tmpSc.set(s, s, s)
+  );
+  pool.mesh.setMatrixAt(rec.idx, _tmpMat4);
+}
+
+function instRemove(rec) {
+  var pool = INST[rec.type];
+  if (!pool) return;
+  rec.active = false;
+  // Hide by scaling to 0
+  _tmpMat4.compose(
+    _tmpPos.set(0, -9999, 0),
+    _tmpQuat.set(0,0,0,1),
+    _tmpSc.set(0,0,0)
+  );
+  pool.mesh.setMatrixAt(rec.idx, _tmpMat4);
+  pool.mesh.instanceMatrix.needsUpdate = true;
+  pool.freeSlots.push(rec.idx);
+  INST_LIST = INST_LIST.filter(function(r) { return r !== rec; });
+}
+
+function instClearAll() {
+  for (var type in INST) {
+    var pool = INST[type];
+    pool.mesh.count = 0;
+    pool.slots = [];
+    pool.freeSlots = [];
+    pool.mesh.instanceMatrix.needsUpdate = true;
+  }
+  INST_LIST = [];
+}
+
+// Raycast against all InstancedMeshes. Returns {rec, point} or null.
+function instGetHit(e) {
+  setMouse(e);
+  raycaster.setFromCamera(mousePt, camera);
+  var bestDist = Infinity, bestRec = null, bestPt = null;
+  for (var type in INST) {
+    var pool = INST[type];
+    if (pool.mesh.count === 0) continue;
+    var hits = raycaster.intersectObject(pool.mesh, false);
+    for (var i = 0; i < hits.length; i++) {
+      var h = hits[i];
+      if (h.instanceId !== undefined && h.distance < bestDist) {
+        var rec = pool.slots[h.instanceId];
+        if (rec && rec.active) {
+          bestDist = h.distance;
+          bestRec = rec;
+          bestPt = h.point;
+        }
+      }
+    }
+  }
+  return bestRec ? {rec: bestRec, point: bestPt} : null;
+}
+
+// Selection state for instances
+var INST_SEL = null; // currently selected instance record
+
+function instSelect(rec) {
+  instDeselect();
+  INST_SEL = rec;
+  // Highlight: use per-instance color
+  var pool = INST[rec.type];
+  if (pool && pool.mesh.instanceColor === null) {
+    // Initialize instance colors to white (neutral with vertexColors)
+    var ic = new Float32Array(INST_MAX * 3);
+    for (var i = 0; i < INST_MAX * 3; i++) ic[i] = 1.0;
+    pool.mesh.instanceColor = new THREE.InstancedBufferAttribute(ic, 3);
+  }
+  if (pool) {
+    pool.mesh.instanceColor.setXYZ(rec.idx, 0.6, 1.0, 0.8);
+    pool.mesh.instanceColor.needsUpdate = true;
+  }
+  // Show control bar
+  var bar = document.getElementById('obj-bar');
+  bar.classList.add('on');
+  document.getElementById('c-scale').value = rec.sc || 1;
+  document.getElementById('cv-scale').textContent = (rec.sc||1).toFixed(1) + '×';
+  var deg = Math.round(((rec.rot||0)*180/Math.PI)%360);
+  document.getElementById('c-rot').value = deg;
+  document.getElementById('cv-rot').textContent = deg + '°';
+}
+
+function instDeselect() {
+  if (!INST_SEL) return;
+  var pool = INST[INST_SEL.type];
+  if (pool && pool.mesh.instanceColor) {
+    pool.mesh.instanceColor.setXYZ(INST_SEL.idx, 1, 1, 1);
+    pool.mesh.instanceColor.needsUpdate = true;
+  }
+  INST_SEL = null;
+}
+
+
+// ============================================================
+// === ÉVÉNEMENTS SOURIS / TOUCH ===
+// ============================================================
+var drag={active:false,type:'none',sx:0,sy:0,px:0,py:0};
+var pinch={dist:0};var clickStart={x:0,y:0,t:0};
+
+function attachEvents(){
+  var cvs=renderer.domElement;
+  cvs.addEventListener('mousedown',function(e){
+    e.preventDefault();
+    drag.px=e.clientX;drag.py=e.clientY;drag.sx=e.clientX;drag.sy=e.clientY;
+    clickStart={x:e.clientX,y:e.clientY,t:Date.now()};
+    if(e.button===2){drag.active=true;drag.type='pan';}
+    else if(S.tool==='move'){var h=getHitObj(e);if(h){if(h._inst){instSelect(h.rec);drag.active=true;drag.type='moveObj';}else{selectObj(h);drag.active=true;drag.type='moveObj';}}else{drag.active=true;drag.type='orbit';}}
+    else{drag.active=true;drag.type='orbit';}
+  });
+  document.addEventListener('mousemove',function(e){
+    if(!drag.active)return;
+    var dx=e.clientX-drag.px,dy=e.clientY-drag.py;drag.px=e.clientX;drag.py=e.clientY;
+    if(drag.type==='orbit'){cam.theta-=dx*.007;cam.phi=Math.max(.06,Math.min(Math.PI/2-.03,cam.phi-dy*.007));syncCam();}
+    else if(drag.type==='pan'){var sp=cam.r*.0014,r=new THREE.Vector3(),fw=new THREE.Vector3();r.crossVectors(camera.getWorldDirection(new THREE.Vector3()),new THREE.Vector3(0,1,0)).normalize();fw.crossVectors(r,new THREE.Vector3(0,1,0)).normalize();cam.tx-=r.x*dx*sp;cam.tz-=r.z*dx*sp;cam.tx+=fw.x*dy*sp;cam.tz+=fw.z*dy*sp;syncCam();}
+    else if(drag.type==='moveObj'){
+      if(INST_SEL){var pt=groundPt(e);if(pt){INST_SEL.x=pt.x;INST_SEL.z=pt.z;var pool=INST[INST_SEL.type];instUpdateMatrix(pool,INST_SEL.idx);pool.mesh.instanceMatrix.needsUpdate=true;}}
+      else if(S.selObj){var pt=groundPt(e);if(pt){var go=S.selObj.userData.groundOffset||0;S.selObj.position.set(pt.x,go,pt.z);}}
+    }
+  });
+  document.addEventListener('mouseup',function(e){
+    var moved=Math.hypot(e.clientX-drag.sx,e.clientY-drag.sy),elapsed=Date.now()-clickStart.t;
+    drag.active=false;drag.type='none';
+    if(moved<8&&elapsed<400&&e.target===cvs)handleClick(e);
+  });
+  cvs.addEventListener('wheel',function(e){e.preventDefault();cam.r=Math.max(2,Math.min(80,cam.r+e.deltaY*.025));syncCam();},{passive:false});
+  cvs.addEventListener('contextmenu',function(e){e.preventDefault();});
+  cvs.addEventListener('touchstart',function(e){
+    e.preventDefault();var ts=Array.from(e.touches);
+    clickStart={x:ts[0].clientX,y:ts[0].clientY,t:Date.now()};
+    if(ts.length===1){drag.active=true;drag.type='orbit';drag.px=ts[0].clientX;drag.py=ts[0].clientY;drag.sx=drag.px;drag.sy=drag.py;}
+    else if(ts.length===2){drag.active=true;drag.type='pinch';pinch.dist=Math.hypot(ts[0].clientX-ts[1].clientX,ts[0].clientY-ts[1].clientY);}
+  },{passive:false});
+  cvs.addEventListener('touchmove',function(e){
+    e.preventDefault();var ts=Array.from(e.touches);
+    if(ts.length===1&&drag.active){var dx=ts[0].clientX-drag.px,dy=ts[0].clientY-drag.py;drag.px=ts[0].clientX;drag.py=ts[0].clientY;cam.theta-=dx*.01;cam.phi=Math.max(.06,Math.min(Math.PI/2-.03,cam.phi-dy*.01));syncCam();}
+    else if(ts.length===2&&drag.type==='pinch'){var d=Math.hypot(ts[0].clientX-ts[1].clientX,ts[0].clientY-ts[1].clientY);cam.r=Math.max(2,Math.min(80,cam.r+(pinch.dist-d)*.06));syncCam();pinch.dist=d;}
+  },{passive:false});
+  cvs.addEventListener('touchend',function(e){
+    var t=e.changedTouches[0],moved=Math.hypot(t.clientX-drag.sx,t.clientY-drag.sy),elapsed=Date.now()-clickStart.t;
+    if(moved<12&&elapsed<400)handleClick({clientX:t.clientX,clientY:t.clientY,target:cvs});
+    drag.active=false;drag.type='none';
+  });
+  window.addEventListener('resize',function(){camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
+}
+
+function setMouse(e){var r=renderer.domElement.getBoundingClientRect();mousePt.x=((e.clientX-r.left)/r.width)*2-1;mousePt.y=-((e.clientY-r.top)/r.height)*2+1;}
+function groundPt(e){setMouse(e);raycaster.setFromCamera(mousePt,camera);var pl=new THREE.Plane(new THREE.Vector3(0,1,0),0),pt=new THREE.Vector3();raycaster.ray.intersectPlane(pl,pt);return pt;}
+function getHitObj(e){
+  // First check InstancedMeshes (GLB plants)
+  var ih=instGetHit(e);
+  if(ih) return {_inst:true, rec:ih.rec};
+  // Then check regular objects (procedural)
+  setMouse(e);raycaster.setFromCamera(mousePt,camera);
+  var hits=raycaster.intersectObjects(S.objects,true);if(!hits.length)return null;
+  var o=hits[0].object;while(o.parent&&!S.objects.includes(o))o=o.parent;
+  return S.objects.includes(o)?o:null;
+}
+
+function handleClick(e){
+  if(S.tool==='move')return;
+  var hit=getHitObj(e);
+  if(S.tool==='place'){
+    if(hit){
+      if(hit._inst){instSelect(hit.rec);}
+      else{selectObj(hit);}
+      return;
+    }
+    var pt=groundPt(e);
+    if(pt){var hL=S.dimL/2,hW=S.dimW/2;var px=Math.max(-hL+.5,Math.min(hL-.5,pt.x)),pz=Math.max(-hW+.5,Math.min(hW-.5,pt.z));placeObj(S.selType,px,pz);toast('✦ Élément ajouté');}
+    deselect();
+  }
+}
+
+function selectObj(obj){
+  deselect();S.selObj=obj;doHL(obj,true);
+  var bar=document.getElementById('obj-bar');bar.classList.add('on');
+  document.getElementById('c-scale').value=obj.userData.sc||1;
+  document.getElementById('cv-scale').textContent=(obj.userData.sc||1).toFixed(1)+'×';
+  var deg=Math.round(((obj.userData.rot||0)*180/Math.PI)%360);
+  document.getElementById('c-rot').value=deg;document.getElementById('cv-rot').textContent=deg+'°';
+}
+function deselect(){instDeselect();if(S.selObj)doHL(S.selObj,false);S.selObj=null;document.getElementById('obj-bar').classList.remove('on');}
+function doHL(obj,on){obj.traverse(function(m){if(!m.isMesh)return;if(on){m.material=m.material.clone();m.material.emissive=new THREE.Color(0x6ee7b7);m.material.emissiveIntensity=.32;}else{if(m.material&&m.material.emissive){m.material.emissive.setHex(0);m.material.emissiveIntensity=0;}}});}
+function updScale(v){
+  var val=parseFloat(v);
+  if(INST_SEL){INST_SEL.sc=val;var pool=INST[INST_SEL.type];instUpdateMatrix(pool,INST_SEL.idx);pool.mesh.instanceMatrix.needsUpdate=true;document.getElementById('cv-scale').textContent=val.toFixed(1)+'×';return;}
+  if(!S.selObj)return;S.selObj.userData.sc=val;S.selObj.scale.setScalar(val);document.getElementById('cv-scale').textContent=val.toFixed(1)+'×';
+}
+function updRot(v){
+  var deg=parseInt(v),rad=deg*Math.PI/180;
+  if(INST_SEL){INST_SEL.rot=rad;var pool=INST[INST_SEL.type];instUpdateMatrix(pool,INST_SEL.idx);pool.mesh.instanceMatrix.needsUpdate=true;document.getElementById('cv-rot').textContent=deg+'°';return;}
+  if(!S.selObj)return;S.selObj.userData.rot=rad;S.selObj.rotation.y=rad;document.getElementById('cv-rot').textContent=deg+'°';
+}
+function delSelected(){
+  if(INST_SEL){instRemove(INST_SEL);instDeselect();document.getElementById('obj-bar').classList.remove('on');updateCount();toast('🗑 Supprimé');return;}
+  if(!S.selObj)return;scene.remove(S.selObj);S.objects=S.objects.filter(function(o){return o!==S.selObj;});deselect();updateCount();toast('🗑 Supprimé');
+}
+function setTool(t){S.tool=t;document.querySelectorAll('.t-btn').forEach(function(b){b.classList.remove('active');});var el=document.getElementById('tb-'+t);if(el)el.classList.add('active');if(t!=='move')deselect();}
+
+// ============================================================
+// === TOGGLE GRILLE — CORRIGÉ ===
+// Bouton clair avec état visible (ON/OFF) et tooltip
+// ============================================================
+function toggleGrid(){
+  gridVisible=!gridVisible;
+  if(gridMesh)gridMesh.visible=gridVisible;
+  var btn=document.getElementById('tb-grid');
+  var badge=document.getElementById('grid-badge');
+  if(btn){
+    if(gridVisible){
+      btn.classList.add('active');
+      btn.title='Masquer la grille';
+      if(badge)badge.textContent='ON';
+      toast('⊞ Grille affichée');
+    }else{
+      btn.classList.remove('active');
+      btn.title='Afficher la grille';
+      if(badge)badge.textContent='OFF';
+      toast('⊞ Grille masquée');
+    }
+  }
+}
+
+function selType(type){S.selType=type;document.querySelectorAll('.obj-tile').forEach(function(t){t.classList.remove('sel');});var el=document.querySelector('.obj-tile[data-type="'+type+'"]');if(el)el.classList.add('sel');setTool('place');}
+function updateCount(){document.getElementById('info-count').textContent=S.objects.length+INST_LIST.length;}
+function animate(){requestAnimationFrame(animate);renderer.render(scene,camera);}
+
+// ============================================================
+// === UTILITAIRES PROCÉDURAUX ===
+// ============================================================
+function rnd(a,b){return a+Math.random()*(b-a);}
+function M(geo,col){var mat=new THREE.MeshLambertMaterial({color:col});var m=new THREE.Mesh(geo,mat);m.castShadow=true;m.receiveShadow=true;return m;}
+function makeTrunk(bR,tR,h,bend,col){
+  var pts=[],segs=8;
+  for(var i=0;i<=segs;i++){var t=i/segs;pts.push(new THREE.Vector3(bend*Math.sin(t*Math.PI)*rnd(.8,1.2),t*h,bend*.4*Math.sin(t*Math.PI+.5)*rnd(.8,1.2)));}
+  var curve=new THREE.CatmullRomCurve3(pts);
+  var tube=new THREE.TubeGeometry(curve,12,bR,8,false);
+  var pos=tube.attributes.position;
+  for(var i=0;i<pos.count;i++){var t2=Math.max(0,Math.min(1,pos.getY(i)/h));var r=bR+(tR-bR)*t2;var n=1+rnd(-.04,.04);pos.setX(i,pos.getX(i)*(r/bR)*n);pos.setZ(i,pos.getZ(i)*(r/bR)*n);}
+  pos.needsUpdate=true;tube.computeVertexNormals();
+  var mesh=new THREE.Mesh(tube,new THREE.MeshLambertMaterial({color:col}));mesh.castShadow=true;mesh.receiveShadow=true;return mesh;
+}
+function addFoliage(cx,cy,cz,mainR,count,cols,g){
+  for(var i=0;i<count;i++){var th=rnd(0,Math.PI*2),ph=rnd(0,Math.PI),d=rnd(0,mainR*.55),r=rnd(mainR*.55,mainR*.85);var px=cx+d*Math.sin(ph)*Math.cos(th),py=cy+d*Math.cos(ph)*rnd(.3,1),pz=cz+d*Math.sin(ph)*Math.sin(th);var col=cols[Math.floor(Math.random()*cols.length)];var sp=M(new THREE.SphereGeometry(r,7,5),col);sp.scale.set(rnd(.8,1.2),rnd(.85,1.15),rnd(.8,1.2));sp.position.set(px,py,pz);g.add(sp);}
+}
+function addPine(topY,layers,g){
+  var gr=[0x1a5c1a,0x236b23,0x2d7a2d,0x1e6b2e,0x0f4f1f];
+  for(var i=0;i<layers;i++){var t=i/(layers-1),bR=rnd(1.1,1.4)*(1-t*.55),cH=rnd(1.0,1.4)*(1-t*.3),y=topY-i*(cH*.55);var cone=M(new THREE.ConeGeometry(bR,cH,9+i),gr[i%gr.length]);cone.position.y=y;g.add(cone);if(i<layers-1){var cb=M(new THREE.ConeGeometry(bR*.85,cH*.7,8),gr[(i+2)%gr.length]);cb.position.set(rnd(-.1,.1),y-cH*.28,rnd(-.1,.1));g.add(cb);}}
+}
+
+// ============================================================
+// === OBJETS 3D PROCÉDURAUX — TAILLES NORMALISÉES ===
+// CORRECTION CRITIQUE : chaque arbre a une hauteur cible définie
+// dans TREE_HEIGHTS, et la géométrie est mise à l'échelle en conséquence
+// ============================================================
+
+// Normalise la hauteur d'un groupe en mesurant sa bounding box
+function normalizeHeight(group, targetH){
+  var box=new THREE.Box3().setFromObject(group);
+  var actualH=box.max.y-box.min.y;
+  if(actualH>0.01){
+    var factor=targetH/actualH;
+    group.scale.setScalar(factor);
+  }
+}
+
+function buildObj(type){
+  var g=new THREE.Group();
+  g.userData.type=type;
+  g.userData.id=Math.random().toString(36).substr(2,9);
+  g.userData.sc=1;
+  g.userData.rot=0;
+
+  switch(type){
+    // ---- CYPRÈS COLONNE — vert foncé, tronc marron ----
+    case 'cypress':{
+      var h=rnd(5,12);
+      // Tronc marron visible à la base
+      var trunkH=h*0.12;
+      var trunkMat=new THREE.MeshLambertMaterial({color:0x5a3010});
+      var trunk=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.18,trunkH,7),trunkMat);
+      trunk.position.y=trunkH*0.5;trunk.castShadow=true;g.add(trunk);
+      // Écorce texturée — stries verticales marron foncé
+      var barkMat=new THREE.MeshLambertMaterial({color:0x3a1e08});
+      for(var bi=0;bi<6;bi++){
+        var ba=bi/6*Math.PI*2;
+        var bark=new THREE.Mesh(new THREE.CylinderGeometry(0.005,0.01,trunkH*0.9,3),barkMat);
+        bark.position.set(Math.sin(ba)*0.13,trunkH*0.5,Math.cos(ba)*0.13);g.add(bark);
+      }
+      // Colonne de feuillage : couches coniques empilées, très étroites
+      // Vert foncé naturel — 3 tons pour donner du volume
+      var cMat1=new THREE.MeshLambertMaterial({color:0x1a3d0f}); // vert très foncé
+      var cMat2=new THREE.MeshLambertMaterial({color:0x22500f}); // vert foncé
+      var cMat3=new THREE.MeshLambertMaterial({color:0x142d0a}); // vert presque noir (creux)
+      var nLayers=Math.floor(h/0.55);
+      for(var i=0;i<nLayers;i++){
+        var t=i/nLayers;
+        // Rayon qui diminue vers le sommet — profil très effilé comme sur la photo
+        var baseR=rnd(0.30,0.40)*(1-t*0.78);
+        var layerH=rnd(0.50,0.72)*(1-t*0.18);
+        var yPos=trunkH*0.6+i*(layerH*0.52);
+        // Alternance des 3 matériaux pour volume
+        var mat=(i%3===0)?cMat1:(i%3===1)?cMat2:cMat3;
+        var cone=new THREE.Mesh(new THREE.ConeGeometry(baseR,layerH,8+Math.floor((1-t)*4)),mat);
+        cone.position.y=yPos;cone.castShadow=true;g.add(cone);
+        // Couche d'ombre sur le dos de chaque niveau
+        if(i%2===0 && baseR>0.08){
+          var shadow=new THREE.Mesh(new THREE.ConeGeometry(baseR*0.88,layerH*0.7,6),cMat3);
+          shadow.position.set(rnd(-0.04,0.04),yPos+layerH*0.05,rnd(-0.04,0.04));
+          g.add(shadow);
+        }
+      }
+      // Pointe au sommet — très fine
+      var tipMat=new THREE.MeshLambertMaterial({color:0x22500f});
+      var tip=new THREE.Mesh(new THREE.ConeGeometry(0.04,rnd(0.4,0.7),6),tipMat);
+      tip.position.y=trunkH*0.5+nLayers*(0.52*0.6)+0.2;
+      tip.castShadow=true;g.add(tip);
+      normalizeHeight(g,rnd(TREE_HEIGHTS.cypress.min,TREE_HEIGHTS.cypress.max));
+      break;
+    }
+    case 'washingtonia':{
+      var tH=rnd(5,12);
+      var trunkMat=new THREE.MeshLambertMaterial({color:0x7a5c28});
+      var trunk=new THREE.Mesh(new THREE.CylinderGeometry(.1,.15,tH,8),trunkMat);
+      trunk.position.y=tH*.5;trunk.castShadow=true;g.add(trunk);
+      // Jupe de palmes mortes
+      var deadMat=new THREE.MeshLambertMaterial({color:0x8a7040});
+      var nDead=Math.floor(rnd(8,14));
+      for(var i=0;i<nDead;i++){
+        var fa=i/nDead*Math.PI*2,fl=rnd(.6,1);
+        var deadCurve=new THREE.CatmullRomCurve3([new THREE.Vector3(0,tH*.85,0),new THREE.Vector3(Math.sin(fa)*fl*.5,tH*.75,Math.cos(fa)*fl*.5),new THREE.Vector3(Math.sin(fa)*fl,tH*.55,Math.cos(fa)*fl)]);
+        var dead=new THREE.Mesh(new THREE.TubeGeometry(deadCurve,4,.015,4,false),deadMat);g.add(dead);
+      }
+      // Palmes vivantes au sommet
+      var frondMat=new THREE.MeshLambertMaterial({color:0x3a7c20});
+      var nFronds=Math.floor(rnd(12,18));
+      for(var i=0;i<nFronds;i++){
+        var fa=i/nFronds*Math.PI*2,fl=rnd(1.2,2);
+        var fCurve=new THREE.CatmullRomCurve3([new THREE.Vector3(0,tH,0),new THREE.Vector3(Math.sin(fa)*fl*.5,tH+fl*.2,Math.cos(fa)*fl*.5),new THREE.Vector3(Math.sin(fa)*fl,tH-fl*.15,Math.cos(fa)*fl)]);
+        var frond=new THREE.Mesh(new THREE.TubeGeometry(fCurve,5,.02,4,false),frondMat);g.add(frond);
+      }
+      normalizeHeight(g,rnd(6,15));break;
+    }
+    default:{var fb=M(new THREE.BoxGeometry(.6,.6,.6),0x7a9e64);fb.position.y=.3;g.add(fb);}
+  }
+  return g;
+}
+
+// ============================================================
+// === PLACEMENT D'OBJETS ===
+// CORRECTION : suppression du double bloc palm + suppression des
+// appels à loadGLBFromBase64 / CYPRESS_GLB_B64 / PALM_GLB_B64
+// qui n'existaient pas → erreur "Failed to fetch" permanente.
+// On utilise uniquement les modèles procéduraux, qui sont fiables
+// à 100% sans serveur, sans fichier externe.
+// ============================================================
+function placeObj(type, x, z, sc, rot, callback){
+  sc = sc || 1;
+  rot = rot || 0;
+
+  // Sujets 3D du catalogue — INSTANCED MESH (1 draw call par espèce = 60 FPS à 300+ plantes)
+  if(GLB_FILES[type]){
+    // Ensure pool is prepared (async on first call, then cached)
+    if(!INST[type]){
+      loadGLBModel(type, function(glbGroup){
+        if(!glbGroup){ /* fallback */ var fb=buildObj(type);var b=new THREE.Box3().setFromObject(fb);fb.position.set(x,-b.min.y,z);fb.scale.setScalar(sc);fb.rotation.y=rot;fb.userData.type=type;fb.userData.sc=sc;fb.userData.rot=rot;scene.add(fb);S.objects.push(fb);updateCount();if(callback)callback(fb);return;}
+        instPrepare(type, glbGroup);
+        var rec=instPlace(type, x, z, sc, rot);
+        updateCount();
+        if(callback)callback(rec);
+      });
+    } else {
+      var rec=instPlace(type, x, z, sc, rot);
+      updateCount();
+      if(callback)callback(rec);
+    }
+    return;
+  }
+
+  var obj = buildObj(type);
+
+  // Positionner la base de l'objet exactement sur le sol (Y=0)
+  var bbox = new THREE.Box3().setFromObject(obj);
+  var groundOffset = -bbox.min.y;
+  obj.position.set(x, groundOffset, z);
+  obj.userData.groundOffset = groundOffset;
+
+  obj.scale.setScalar(sc);
+  obj.rotation.y = rot;
+  obj.userData.sc = sc;
+  obj.userData.rot = rot;
+
+  scene.add(obj);
+  S.objects.push(obj);
+  updateCount();
+  if(callback) callback(obj);
+  return obj;
+}
+
+// ============================================================
+// === PALETTE ===
+// ============================================================
+function buildPalette(){
+  var panel=document.getElementById('rpal-body');
+  if(!panel)return;
+  panel.innerHTML='';
+
+  // ── SEARCH BAR ─────────────────────────────────────────────
+  var searchInput=document.createElement('input');
+  searchInput.id='plant-search';
+  searchInput.type='text';
+  searchInput.placeholder='🔍 Rechercher…';
+  panel.appendChild(searchInput);
+
+  // ── CATEGORY LIST (vertical pills) ─────────────────────────
+  var allCats=Object.keys(PLANT_DB);
+  var currentCat='all';
+
+  // Count per category
+  function catCount(cat){return cat==='all'?Object.values(PLANT_DB).reduce(function(s,a){return s+a.length;},0):((PLANT_DB[cat]||[]).length);}
+
+  var tabsDiv=document.createElement('div');
+  tabsDiv.className='cat-tabs';
+  panel.appendChild(tabsDiv);
+
+  function renderTabs(){
+    tabsDiv.innerHTML='';
+    var cats=[{key:'all',label:'🌿 Tout'}].concat(allCats.map(function(c){return {key:c,label:c};}));
+    cats.forEach(function(cat){
+      var t=document.createElement('button');
+      t.className='cat-tab'+(currentCat===cat.key?' active':'');
+      t.innerHTML=cat.label+'<span class="cat-count">'+catCount(cat.key)+'</span>';
+      t.onclick=function(){currentCat=cat.key;renderTabs();renderGrid();};
+      tabsDiv.appendChild(t);
+    });
+  }
+  renderTabs();
+
+  // ── GRID (2 columns) ───────────────────────────────────────
+  var gridDiv=document.createElement('div');
+  gridDiv.id='plant-grid';
+  panel.appendChild(gridDiv);
+
+  // Recommended IDs for current soil
+  var recIds=S.soil&&SOIL[S.soil]?SOIL[S.soil].rec:[];
+
+  // ── SVG ICON GENERATOR ────────────────────────────────────
+  function makeSVGPreview(plant){
+    // Si une vraie photo existe pour cette plante, on l'utilise
+    if(typeof PLANT_PHOTOS !== 'undefined' && PLANT_PHOTOS[plant.id]){
+      var ns='http://www.w3.org/2000/svg';
+      var svg=document.createElementNS(ns,'svg');
+      svg.setAttribute('viewBox','0 0 40 40');
+      svg.setAttribute('xmlns',ns);
+      var img=document.createElementNS(ns,'image');
+      img.setAttribute('href', PLANT_PHOTOS[plant.id]);
+      img.setAttribute('x','0'); img.setAttribute('y','0');
+      img.setAttribute('width','40'); img.setAttribute('height','40');
+      img.setAttribute('preserveAspectRatio','xMidYMid meet');
+      svg.appendChild(img);
+      return svg;
+    }
+    var cat=plant.cat||'';
+    var fc=(plant.fc&&plant.fc[0])||0x3a8020;
+    var hexColor='#'+fc.toString(16).padStart(6,'0');
+    var darkColor='#'+(Math.max(0,fc-0x151515)).toString(16).padStart(6,'0');
+    var ns='http://www.w3.org/2000/svg';
+    var svg=document.createElementNS(ns,'svg');
+    svg.setAttribute('viewBox','0 0 40 40');
+    function el(tag,attrs){var e=document.createElementNS(ns,tag);Object.keys(attrs).forEach(function(k){e.setAttribute(k,attrs[k]);});svg.appendChild(e);return e;}
+    var id=plant.id||'';
+
+    if(cat.indexOf('Construction')>=0){
+      if(id==='fountain'){
+        el('ellipse',{cx:20,cy:34,rx:13,ry:3.5,fill:'#9a9080'});
+        el('ellipse',{cx:20,cy:34,rx:9,ry:2,fill:'#40c0e8'});
+        el('rect',{x:18,y:14,width:4,height:20,fill:'#9a9080'});
+        el('ellipse',{cx:20,cy:14,rx:8,ry:3,fill:'#b0a898'});
+        el('ellipse',{cx:20,cy:10,rx:5,ry:2,fill:'#60d0f0'});
+        el('path',{d:'M17 10 Q15 4 20 2 Q25 4 23 10',fill:'none',stroke:'#60d0f0','stroke-width':'1.5'});
+      } else if(id==='pond'){
+        el('ellipse',{cx:20,cy:26,rx:16,ry:8,fill:'#3090b8'});
+        el('ellipse',{cx:20,cy:25,rx:12,ry:5,fill:'#40a8d0'});
+        el('ellipse',{cx:17,cy:24,rx:3,ry:1.5,fill:'rgba(255,255,255,.15)'});
+      } else if(id==='pergola'){
+        el('rect',{x:6,y:12,width:4,height:22,fill:'#9a7848'});
+        el('rect',{x:30,y:12,width:4,height:22,fill:'#9a7848'});
+        el('rect',{x:4,y:10,width:32,height:4,fill:'#b08a58'});
+        for(var i=0;i<5;i++){el('rect',{x:6+i*7,y:10,width:2,height:4,fill:'#7a5828'});}
+        el('line',{x1:6,y1:14,x2:34,y2:14,stroke:'#c09a68','stroke-width':'1.5'});
+      } else if(id==='path'){
+        var stoneC='#c8b890';var dark='#a89870';
+        el('rect',{x:4,y:6,width:14,height:12,rx:1,fill:stoneC});
+        el('rect',{x:22,y:6,width:14,height:12,rx:1,fill:dark});
+        el('rect',{x:4,y:22,width:14,height:12,rx:1,fill:dark});
+        el('rect',{x:22,y:22,width:14,height:12,rx:1,fill:stoneC});
+      } else if(id==='bench'){
+        el('rect',{x:4,y:20,width:32,height:5,rx:2,fill:'#9a6a28'});
+        el('rect',{x:4,y:16,width:32,height:3,rx:1,fill:'#b07838'});
+        el('rect',{x:6,y:24,width:4,height:10,rx:2,fill:'#7a5420'});
+        el('rect',{x:30,y:24,width:4,height:10,rx:2,fill:'#7a5420'});
+      } else if(id==='stone'){
+        el('ellipse',{cx:20,cy:30,rx:16,ry:5,fill:'#6a6a5a'});
+        el('ellipse',{cx:18,cy:24,rx:14,ry:9,fill:'#9a9688'});
+        el('ellipse',{cx:18,cy:22,rx:10,ry:6,fill:'#b0acaa'});
+      } else if(id==='lamp'){
+        el('rect',{x:18,y:12,width:4,height:24,fill:'#2a2a2a'});
+        el('ellipse',{cx:20,cy:12,rx:8,ry:3.5,fill:'#1a1a1a'});
+        el('ellipse',{cx:20,cy:10,rx:6,ry:5,fill:'#fff4a0',opacity:'.9'});
+        el('ellipse',{cx:20,cy:10,rx:3,ry:3,fill:'#fffde0'});
+      } else if(id==='fence'){
+        for(var i=0;i<5;i++){el('rect',{x:3+i*8,y:8,width:3,height:24,rx:1,fill:'#8a6a3a'});}
+        el('rect',{x:3,y:14,width:35,height:3,rx:1,fill:'#9a7a48'});
+        el('rect',{x:3,y:22,width:35,height:3,rx:1,fill:'#9a7a48'});
+      }
+    } else if(cat.indexOf('Arbres')>=0){
+      var trunkC='#5a3c18';
+      if(id==='tree_pine'||id==='cypress'){
+        el('rect',{x:18,y:28,width:4,height:10,fill:trunkC});
+        if(id==='cypress'){el('polygon',{points:'20,4 14,15 15,15 12,26 28,26 25,15 26,15',fill:hexColor});el('polygon',{points:'20,9 15,19 25,19',fill:darkColor});}
+        else{el('polygon',{points:'20,5 9,20 11,20 7,30 33,30 29,20 31,20',fill:hexColor});el('polygon',{points:'20,10 12,23 28,23',fill:darkColor});}
+      } else if(id==='pine_stone'){
+        el('rect',{x:17,y:10,width:6,height:28,fill:trunkC});
+        el('ellipse',{cx:20,cy:12,rx:13,ry:7,fill:hexColor});el('ellipse',{cx:20,cy:10,rx:9,ry:4,fill:darkColor});
+      } else if(id==='birch'){
+        el('rect',{x:18,y:8,width:4,height:30,fill:'#f0f0e8'});
+        el('ellipse',{cx:17,cy:14,rx:7,ry:6,fill:hexColor});el('ellipse',{cx:23,cy:12,rx:6,ry:5,fill:darkColor});
+      } else if(id==='cedar'){
+        el('rect',{x:18,y:28,width:4,height:10,fill:trunkC});
+        el('ellipse',{cx:20,cy:32,rx:14,ry:3.5,fill:hexColor});el('ellipse',{cx:20,cy:26,rx:11,ry:3,fill:hexColor});el('ellipse',{cx:20,cy:20,rx:9,ry:2.5,fill:darkColor});el('ellipse',{cx:20,cy:14,rx:6,ry:2,fill:hexColor});
+      } else if(id==='maple'||id==='acer_jap'){
+        el('rect',{x:18,y:28,width:4,height:10,fill:trunkC});
+        el('ellipse',{cx:20,cy:18,rx:12,ry:11,fill:hexColor});
+        el('circle',{cx:12,cy:14,r:4,fill:'#ff2200'});el('circle',{cx:24,cy:11,r:4,fill:'#cc1100'});el('circle',{cx:20,cy:9,r:3,fill:'#ff6600'});
+      } else if(id==='cherry'||id==='cherry_tree'||id==='almond'){
+        el('rect',{x:18,y:28,width:4,height:10,fill:trunkC});
+        el('ellipse',{cx:20,cy:17,rx:12,ry:10,fill:'#3a7010'});
+        el('circle',{cx:12,cy:13,r:4,fill:'#ffb0d0'});el('circle',{cx:22,cy:10,r:4,fill:'#ffc8e0'});el('circle',{cx:27,cy:16,r:3,fill:'#ffb0d0'});
+      } else {
+        el('rect',{x:18,y:28,width:4,height:10,fill:trunkC});
+        el('ellipse',{cx:20,cy:17,rx:13,ry:12,fill:hexColor});el('ellipse',{cx:16,cy:13,rx:8,ry:7,fill:darkColor});
+      }
+    } else if(cat.indexOf('Palmiers')>=0){
+      el('rect',{x:18,y:10,width:4,height:26,fill:'#6b4c22'});
+      var fanAs=[-55,-35,-15,5,25,45,65];
+      fanAs.forEach(function(a,i){
+        var r=a*Math.PI/180;
+        el('line',{x1:20,y1:10,x2:Math.round(20+Math.cos(r)*16),y2:Math.round(10+Math.sin(r)*9),stroke:i%2===0?hexColor:darkColor,'stroke-width':2.5,'stroke-linecap':'round'});
+      });
+      if(id==='chamaerops'){el('rect',{x:14,y:16,width:3,height:20,fill:'#5a3c18'});}
+    } else if(cat.indexOf('Succulentes')>=0){
+      if(id==='cactus'){
+        el('rect',{x:16,y:8,width:8,height:28,rx:3,fill:hexColor});
+        el('rect',{x:8,y:16,width:8,height:6,rx:2,fill:hexColor});el('rect',{x:24,y:12,width:8,height:6,rx:2,fill:hexColor});
+      } else if(id==='agave'){
+        var leafAs=[0,45,90,135,180,225,270,315];
+        leafAs.forEach(function(a){var r=a*Math.PI/180;el('ellipse',{cx:Math.round(20+Math.sin(r)*10),cy:Math.round(22+Math.cos(r)*7),rx:4,ry:2,fill:hexColor,transform:'rotate('+a+' '+(20+Math.sin(r)*10)+' '+(22+Math.cos(r)*7)+')'});});
+        el('ellipse',{cx:20,cy:22,rx:5,ry:4,fill:darkColor});
+      } else if(id==='opuntia'){
+        el('ellipse',{cx:20,cy:28,rx:8,ry:9,fill:hexColor});el('ellipse',{cx:12,cy:18,rx:6,ry:8,fill:hexColor});el('ellipse',{cx:28,cy:18,rx:6,ry:8,fill:hexColor});
+      } else {
+        for(var i=0;i<8;i++){var a=i/8*Math.PI*2;el('ellipse',{cx:Math.round(20+Math.sin(a)*8),cy:Math.round(22+Math.cos(a)*6),rx:5,ry:3,fill:i%2===0?hexColor:darkColor,transform:'rotate('+(i/8*360)+' '+(20+Math.sin(a)*8)+' '+(22+Math.cos(a)*6)+')'});}
+        el('circle',{cx:20,cy:22,r:4,fill:darkColor});
+      }
+    } else if(cat.indexOf('Graminées')>=0){
+      var bladeAs=[-40,-25,-12,0,12,25,40];
+      bladeAs.forEach(function(a,i){var r=a*Math.PI/180,h=18+Math.abs(a)*.05;el('line',{x1:20,y1:36,x2:Math.round(20+Math.sin(r)*h),y2:Math.round(36-Math.cos(r)*h),stroke:i%2===0?hexColor:darkColor,'stroke-width':1.5,'stroke-linecap':'round'});});
+      if(id==='cortaderia'){el('ellipse',{cx:20,cy:13,rx:6,ry:3.5,fill:'#f8f8f0'});el('ellipse',{cx:14,cy:15,rx:4,ry:2.5,fill:'#e0e0e0'});el('ellipse',{cx:26,cy:14,rx:4,ry:2.5,fill:'#f8f8f0'});}
+      else if(id==='festuca'){el('ellipse',{cx:20,cy:20,rx:9,ry:8,fill:'none',stroke:hexColor,'stroke-width':'1',opacity:'.3'});}
+    } else if(cat.indexOf('Grimpantes')>=0){
+      el('path',{d:'M14 36 Q15 20 18 10',stroke:hexColor,'stroke-width':2,fill:'none','stroke-linecap':'round'});
+      el('path',{d:'M20 36 Q22 20 25 8',stroke:darkColor,'stroke-width':2,fill:'none','stroke-linecap':'round'});
+      if(id==='wisteria'||id==='clematis'){
+        el('circle',{cx:17,cy:10,r:4,fill:'#9966ee'});el('circle',{cx:25,cy:8,r:3.5,fill:'#7744cc'});el('circle',{cx:14,cy:20,r:3,fill:'#aa77ee'});
+      } else if(id==='virginia_creeper'){
+        el('circle',{cx:17,cy:12,r:4.5,fill:'#ff3300'});el('circle',{cx:25,cy:9,r:3.5,fill:'#2a7810'});
+      } else {
+        el('circle',{cx:16,cy:11,r:3.5,fill:hexColor});el('circle',{cx:25,cy:9,r:3,fill:darkColor});
+      }
+    } else if(cat.indexOf('Fleurs')>=0){
+      if(id==='lavender'){
+        el('rect',{x:18,y:14,width:4,height:22,fill:'#6aaa30'});
+        el('polygon',{points:'20,4 15,12 17,12 15,18 25,18 23,12 25,12',fill:'#8b4ab0'});
+      } else if(id==='allium'){
+        el('rect',{x:19,y:16,width:2,height:20,fill:'#3a6020'});
+        el('circle',{cx:20,cy:12,r:8,fill:hexColor,opacity:'.3'});
+        for(var i=0;i<10;i++){var a=i/10*Math.PI*2;el('circle',{cx:Math.round(20+Math.sin(a)*7),cy:Math.round(12+Math.cos(a)*6),r:2.5,fill:hexColor});}
+      } else {
+        el('rect',{x:18,y:22,width:4,height:16,fill:'#3a5818'});
+        var flColors=['#ff2244','#ffaa00','#ff6600','#cc0088','#ffdd00','#9944cc'];
+        var fc2=flColors[Math.floor(plant.id.charCodeAt(0)%flColors.length)];
+        for(var i=0;i<6;i++){var a=i/6*Math.PI*2;el('ellipse',{cx:Math.round(20+Math.sin(a)*9),cy:Math.round(16+Math.cos(a)*7),rx:5,ry:3.5,fill:fc2,transform:'rotate('+(i/6*360)+' '+(20+Math.sin(a)*9)+' '+(16+Math.cos(a)*7)+')'});}
+        el('circle',{cx:20,cy:16,r:4.5,fill:'#ffee44'});
+      }
+    } else if(cat.indexOf('Arbustes')>=0){
+      el('rect',{x:18,y:26,width:4,height:10,fill:'#4a3018'});
+      el('ellipse',{cx:20,cy:20,rx:14,ry:11,fill:hexColor});el('ellipse',{cx:14,cy:16,rx:8,ry:7,fill:darkColor});
+      if(id==='rose'){el('circle',{cx:14,cy:13,r:3.5,fill:'#ff2244'});el('circle',{cx:24,cy:15,r:3,fill:'#ff4466'});}
+      else if(id==='hydrangea'){el('ellipse',{cx:20,cy:13,rx:8,ry:5,fill:'#6080e0'});}
+      else if(id==='forsythia'){el('circle',{cx:12,cy:15,r:2.5,fill:'#ffee00'});el('circle',{cx:22,cy:12,r:2.5,fill:'#ffdd00'});el('circle',{cx:27,cy:18,r:2.5,fill:'#ffee00'});}
+      else if(id==='photinia'){el('ellipse',{cx:22,cy:11,rx:6,ry:3,fill:'#ff2200'});}
+      else if(id==='lilac'){el('ellipse',{cx:20,cy:12,rx:7,ry:5,fill:'#aa66cc'});}
+    } else {
+      // Décoratives
+      if(id==='bamboo'||id==='bamboo_black'){
+        var bc=id==='bamboo_black'?'#2a2a20':'#5a9820';
+        el('rect',{x:15,y:4,width:3,height:32,rx:1,fill:bc});el('rect',{x:21,y:6,width:3,height:30,rx:1,fill:id==='bamboo_black'?'#3a3a28':'#6aab2e'});
+        el('line',{x1:15,y1:12,x2:10,y2:10,stroke:bc,'stroke-width':1});el('line',{x1:24,y1:16,x2:30,y2:14,stroke:bc,'stroke-width':1});
+      } else if(id==='hosta'){
+        for(var i=0;i<5;i++){var a=i/5*Math.PI*2;el('ellipse',{cx:Math.round(20+Math.sin(a)*9),cy:Math.round(20+Math.cos(a)*7),rx:7,ry:4,fill:i%2===0?hexColor:darkColor,transform:'rotate('+(i/5*360)+' '+(20+Math.sin(a)*9)+' '+(20+Math.cos(a)*7)+')'});}
+      } else if(id==='fern'){
+        var fanAs2=[-35,-15,5,25,45];
+        fanAs2.forEach(function(a){var r=a*Math.PI/180;el('path',{d:'M20 34 Q'+(Math.round(20+Math.sin(r)*7))+' '+(Math.round(34-Math.cos(r)*8))+' '+(Math.round(20+Math.sin(r)*14))+' '+(Math.round(34-Math.cos(r)*16)),stroke:hexColor,'stroke-width':2,fill:'none','stroke-linecap':'round'});});
+      } else if(id==='phormium'){
+        var sAs=[-25,-12,0,12,25];
+        sAs.forEach(function(a){var r=a*Math.PI/180;el('line',{x1:20,y1:34,x2:Math.round(20+Math.sin(r)*16),y2:Math.round(34-Math.cos(r)*26),stroke:hexColor,'stroke-width':3,'stroke-linecap':'round'});});
+      } else if(id==='cordyline'){
+        el('rect',{x:18,y:18,width:4,height:18,fill:'#5a3c20'});
+        var cAs=[-28,-14,0,14,28];
+        cAs.forEach(function(a){var r=a*Math.PI/180;el('line',{x1:20,y1:18,x2:Math.round(20+Math.sin(r)*14),y2:Math.round(18-Math.cos(r)*18),stroke:hexColor,'stroke-width':3,'stroke-linecap':'round'});});
+      } else {
+        el('ellipse',{cx:20,cy:20,rx:12,ry:10,fill:hexColor});el('ellipse',{cx:16,cy:16,rx:7,ry:6,fill:darkColor});
+      }
+    }
+    return svg;
+  }
+
+  // ── RENDER GRID ───────────────────────────────────────────
+  function renderGrid(){
+    gridDiv.innerHTML='';
+    var search=searchInput.value.toLowerCase().trim();
+    var recIds2=S.soil&&SOIL[S.soil]?SOIL[S.soil].rec:[];
+
+    var catsToShow=currentCat==='all'?allCats:[currentCat];
+
+    catsToShow.forEach(function(cat){
+      var plants=(PLANT_DB[cat]||[]);
+      if(search){plants=plants.filter(function(p){return p.name.toLowerCase().indexOf(search)>=0||(p.sci&&p.sci.toLowerCase().indexOf(search)>=0)||p.id.indexOf(search)>=0;});}
+      if(plants.length===0)return;
+
+      // Section header when showing all categories
+      if(currentCat==='all'){
+        var hd=document.createElement('div');
+        hd.className='grid-section-hd';
+        hd.textContent=cat;
+        gridDiv.appendChild(hd);
+      }
+
+      plants.forEach(function(p){
+        var tile=document.createElement('div');
+        tile.className='obj-tile'+(S.selType===p.id?' sel':'')+(recIds2.indexOf(p.id)>=0?' rec':'');
+        tile.title=(p.name||p.id)+(p.sci&&p.sci!=='—'?' — '+p.sci:'');
+
+        var previewDiv=document.createElement('div');
+        previewDiv.className='plant-preview';
+        previewDiv.appendChild(makeSVGPreview(p));
+        tile.appendChild(previewDiv);
+
+        var nameDiv=document.createElement('div');
+        nameDiv.className='on';
+        nameDiv.textContent=(p.name||p.id);
+        tile.appendChild(nameDiv);
+
+        if(p.sci&&p.sci!=='—'){
+          var sciSpan=document.createElement('span');
+          sciSpan.className='on-sci';
+          sciSpan.textContent=p.sci;
+          tile.appendChild(sciSpan);
+        }
+
+        tile.onclick=function(){
+          S.selType=p.id;
+          document.querySelectorAll('.obj-tile').forEach(function(t){t.classList.remove('sel');});
+          tile.classList.add('sel');
+          tile.querySelector('.on').style.color='';
+          toast('✅ '+p.name+' sélectionné');
+        };
+        gridDiv.appendChild(tile);
+      });
+    });
+
+    // Empty state
+    if(gridDiv.children.length===0){
+      var empty=document.createElement('div');
+      empty.style.cssText='grid-column:1/-1;text-align:center;padding:24px 10px;color:rgba(200,221,184,.25);font-size:11px;line-height:1.6';
+      empty.innerHTML='🔍<br>Aucun résultat<br><span style="font-size:9px">Essayez un autre terme</span>';
+      gridDiv.appendChild(empty);
+    }
+  }
+
+  searchInput.addEventListener('input',function(){renderGrid();});
+  renderGrid();
+}
+
+// === THÈMES IA ===
+var pendingTheme=null;
+function buildThemesUI(){
+  var grid=document.getElementById('themes-grid');
+  grid.innerHTML=THEMES.map(function(t){return '<div class="theme-card" id="th-'+t.id+'" onclick="selectTheme(\''+t.id+'\',\''+t.name+'\')"><span class="ti2">'+t.icon+'</span><div class="tn">'+t.name+'</div><div class="td">'+t.desc+'</div></div>';}).join('');
+}
+
+var paletteOpen=true;
+function togglePalette(){
+  paletteOpen=!paletteOpen;
+  var rpal=document.getElementById('rpal'),arrow=document.getElementById('rpal-arrow');
+  if(paletteOpen){rpal.classList.remove('collapsed');if(arrow)arrow.style.transform='rotate(0deg)';}
+  else{rpal.classList.add('collapsed');if(arrow)arrow.style.transform='rotate(180deg)';}
+}
+
+function selectTheme(id,name){
+  pendingTheme={id:id,name:name};
+  document.querySelectorAll('.theme-card').forEach(function(c){c.classList.remove('active','gen');});
+  var card=document.getElementById('th-'+id);if(card)card.classList.add('active');
+  document.getElementById('apply-label').textContent='— '+name;
+  document.getElementById('ia-apply-btn').classList.add('active');
+}
+function applySelectedTheme(){if(!pendingTheme)return;applyTheme(pendingTheme.id,pendingTheme.name);}
+function applyTheme(id,name){
+  document.querySelectorAll('.theme-card').forEach(function(c){c.classList.remove('active','gen');});
+  var card=document.getElementById('th-'+id);if(card)card.classList.add('gen');
+  document.getElementById('ia-apply-btn').classList.remove('active');
+  document.getElementById('apply-label').textContent='';
+  var bar=document.getElementById('ia-bar');bar.classList.add('on');
+
+  // Messages de génération animés
+  var msgs=[
+    'Analyse du thème "'+name+'"…',
+    'Sélection des plantes adaptées…',
+    'Calcul des zones de placement…',
+    'Composition du jardin…',
+    'Finalisation…'
+  ];
+  var msgEl=document.getElementById('ia-txt');
+  msgEl.textContent=msgs[0];
+  var msgIdx=0;
+  var msgTimer=setInterval(function(){
+    msgIdx++;
+    if(msgIdx<msgs.length)msgEl.textContent=msgs[msgIdx];
+  },200);
+
+  setTimeout(function(){
+    clearInterval(msgTimer);
+
+    // Nettoyer la scène
+    S.objects.forEach(function(o){scene.remove(o);});
+    S.objects=[];instClearAll();
+    S.theme=name;
+
+    // Changer l'heure du jour selon le thème
+    var bp=THEME_BLUEPRINTS[id];
+    if(bp&&bp.tod&&typeof setTOD==='function'){
+      setTOD(bp.tod);
+    }
+
+    // Générer les éléments via le moteur intelligent
+    var items=smartGenerate(id);
+
+    // Placer chaque élément avec rotation naturelle
+    items.forEach(function(item){
+      placeObj(item.type, item.x, item.z, undefined, item.rot);
+    });
+
+    updateCount();
+    if(card){card.classList.remove('gen');card.classList.add('active');}
+    bar.classList.remove('on');
+    pendingTheme=null;
+
+    var count=S.objects.length;
+    toast('🌿 Jardin "'+name+'" généré — '+count+' éléments');
+    setTimeout(function(){switchTab('garden');},900);
+  },1100);
+}
+
+// ============================================================
+// === SAUVEGARDES ===
+// ============================================================
+function serialize(){
+  var arr=S.objects.map(function(o){return{t:o.userData.type,x:+o.position.x.toFixed(3),z:+o.position.z.toFixed(3),sc:+(o.userData.sc||1).toFixed(2),rot:+(o.userData.rot||0).toFixed(3)};});
+  INST_LIST.forEach(function(r){if(r.active)arr.push({t:r.type,x:+r.x.toFixed(3),z:+r.z.toFixed(3),sc:+(r.sc||1).toFixed(2),rot:+(r.rot||0).toFixed(3)});});
+  return arr;
+}
+function doSave(){
+  var name=prompt('Nom du projet :','Jardin '+(S.saves.length+1));if(!name)return;
+  var thumbs=['🌲','🌴','🌳','🌸','🌺','🌿','🌾','🎋','🫒','⛩️'];
+  S.saves.unshift({id:Date.now(),name:name,date:new Date().toLocaleDateString('fr-FR'),theme:S.theme,soil:S.soil,dims:S.dimL+'×'+S.dimW+'m',count:S.objects.length,thumb:thumbs[Math.floor(Math.random()*thumbs.length)],data:serialize()});
+  localStorage.setItem('g3d_v3',JSON.stringify(S.saves));renderSaves();toast('💾 Sauvegardé !');
+}
+function loadSave(id){var sv=null;for(var i=0;i<S.saves.length;i++){if(S.saves[i].id===id){sv=S.saves[i];break;}}if(!sv)return;S.objects.forEach(function(o){scene.remove(o);});S.objects=[];instClearAll();S.theme=sv.theme;sv.data.forEach(function(d){placeObj(d.t,d.x,d.z,d.sc,d.rot);});deselect();updateCount();toast('📂 "'+sv.name+'" chargé');switchTab('garden');}
+function deleteSave(id){if(!confirm('Supprimer ?'))return;S.saves=S.saves.filter(function(s){return s.id!==id;});localStorage.setItem('g3d_v3',JSON.stringify(S.saves));renderSaves();toast('Projet supprimé');}
+function renameSave(id){var sv=null;for(var i=0;i<S.saves.length;i++){if(S.saves[i].id===id){sv=S.saves[i];break;}}if(!sv)return;var n=prompt('Nouveau nom :',sv.name);if(!n)return;sv.name=n;localStorage.setItem('g3d_v3',JSON.stringify(S.saves));renderSaves();}
+function renderSaves(){
+  var el=document.getElementById('sv-list');
+  if(!S.saves.length){el.innerHTML='<div class="sv-empty"><span class="sv-empty-i">🌱</span>Aucun projet sauvegardé</div>';return;}
+  el.innerHTML='<div class="sv-grid">'+S.saves.map(function(s){return'<div class="sv-card"><div class="sv-thumb">'+s.thumb+'</div><div class="sv-info"><div class="sv-name">'+s.name+'</div><div class="sv-meta"><span>'+s.theme+'</span><span>'+s.count+' éléments</span><span>'+(s.dims||'')+'</span><span>'+s.date+'</span></div><div class="sv-row"><button class="sv-sm" onclick="loadSave('+s.id+')">Charger</button><button class="sv-sm" onclick="renameSave('+s.id+')">Renommer</button><button class="sv-sm del" onclick="deleteSave('+s.id+')">Supprimer</button></div></div></div>';}).join('')+'</div>';
+}
+
+// ============================================================
+// === ONGLETS ===
+// ============================================================
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
+  var el=document.getElementById('tab-'+tab);if(el)el.classList.add('active');
+  document.getElementById('pIA').classList.remove('open');
+  document.getElementById('pSaves').classList.remove('open');
+  if(tab!=='ia'){pendingTheme=null;document.getElementById('ia-apply-btn').classList.remove('active');document.getElementById('apply-label').textContent='';document.querySelectorAll('.theme-card').forEach(function(c){c.classList.remove('active','gen');});}
+  var showEd=(tab==='garden');
+  document.getElementById('ltb').style.display=showEd?'flex':'none';
+  document.getElementById('rpal').style.display=showEd?'flex':'none';
+  if(tab==='ia'){document.getElementById('pIA').classList.add('open');deselect();}
+  else if(tab==='saves'){document.getElementById('pSaves').classList.add('open');renderSaves();deselect();}
+}
+
+// ============================================================
+// === TOAST ===
+// ============================================================
+var toastTimer;
+function toast(msg){var el=document.getElementById('toast');el.textContent=msg;el.classList.add('on');clearTimeout(toastTimer);toastTimer=setTimeout(function(){el.classList.remove('on');},2500);}
+
+// ============================================================
+// === SETUP — FORMULAIRE ===
+// ============================================================
+function buildPhotoSlots(){
+  var g=document.getElementById('photo-guide');
+  g.innerHTML=PHOTO_SLOTS.map(function(sl){return'<div class="photo-slot" id="ps-'+sl.id+'" onclick="document.getElementById(\'pi-'+sl.id+'\').click()"><input type="file" id="pi-'+sl.id+'" accept="image/*" onchange="onPhoto(\''+sl.id+'\',event)"><span class="ps-badge'+(sl.req?'':' opt')+'">'+(sl.req?'Requis':'Optionnel')+'</span><span class="ps-icon">'+sl.icon+'</span><span class="ps-label">'+sl.label+'</span><span class="ps-hint">'+sl.hint+'</span><button class="photo-del" onclick="delPhoto(event,\''+sl.id+'\')">×</button></div>';}).join('');
+}
+function onPhoto(id,e){
+  var file=e.target.files[0];if(!file)return;
+  var reader=new FileReader();
+  reader.onload=function(ev){S.photos[id]=ev.target.result;var slot=document.getElementById('ps-'+id);slot.classList.add('has-photo');var old=slot.querySelector('img.thumb');if(old)old.remove();var img=document.createElement('img');img.className='thumb';img.src=ev.target.result;slot.appendChild(img);var req=PHOTO_SLOTS.filter(function(s){return s.req;}).length,done=PHOTO_SLOTS.filter(function(s){return s.req&&S.photos[s.id];}).length;document.getElementById('sn1').className='step-num'+(done>=req?' ok':'');};
+  reader.readAsDataURL(file);
+}
+function delPhoto(e,id){e.stopPropagation();delete S.photos[id];var slot=document.getElementById('ps-'+id);slot.classList.remove('has-photo');var img=slot.querySelector('img.thumb');if(img)img.remove();document.getElementById('pi-'+id).value='';}
+function onDims(){
+  var L=parseInt(document.getElementById('sl-len').value),W=parseInt(document.getElementById('sl-wid').value);
+  S.dimL=L;S.dimW=W;document.getElementById('sv-len').textContent=L+' m';document.getElementById('sv-wid').textContent=W+' m';
+  document.getElementById('dims-label').textContent=L+' × '+W+' m — '+(L*W)+' m²';
+  var area=L*W,cat='Petit terrain';if(area>=200&&area<600)cat='Terrain moyen';else if(area>=600&&area<1500)cat='Grand terrain';else if(area>=1500)cat='Très grand terrain';
+  document.getElementById('dims-sub').textContent=cat;
+  var mx=Math.max(L,W,1),pw=Math.round(L/mx*200),ph=Math.round(W/mx*120);
+  var rect=document.getElementById('dims-rect');rect.style.width=Math.max(60,pw)+'px';rect.style.height=Math.max(40,ph)+'px';
+  document.getElementById('sn2').className='step-num ok';
+}
+function setSoil(btn,soil){document.querySelectorAll('.soil-btn').forEach(function(b){b.classList.remove('active');});btn.classList.add('active');S.soil=soil;document.getElementById('soil-info').innerHTML=SOIL_INFO[soil]||'';document.getElementById('sn3').className='step-num ok';}
+
+function launchEditor(){
+  document.getElementById('screen-setup').classList.add('hidden');
+  document.getElementById('screen-editor').classList.remove('hidden');
+  document.getElementById('info-dims').textContent=S.dimL+'×'+S.dimW+'m';
+  var sd=SOIL[S.soil]||SOIL.loam;
+  document.getElementById('info-soil').textContent=sd.icon+' '+sd.name;
+  document.getElementById('ia-soil-tag').textContent='⭐ Plantes adaptées · Sol '+sd.name;
+  document.getElementById('rpal-soil').textContent=sd.icon+' Sol '+sd.name.toLowerCase();
+  if(!renderer){initThree();}else{rebuildGround();resetCam();}
+  buildPalette();buildThemesUI();
+  switchTab('garden');
+  var msgs=['Création du terrain…','Génération de l\'herbe…','Éclairage en cours…','Finalisation…'],mi=0;
+  var iv=setInterval(function(){if(mi<msgs.length)document.getElementById('ld-sub').textContent=msgs[mi++];else clearInterval(iv);},300);
+  setTimeout(function(){document.getElementById('loading').classList.add('done');setTimeout(function(){var h=document.getElementById('cam-hint');if(h)h.classList.add('gone');},5000);},1600);
+}
+
+function clearGarden(){if((S.objects.length+INST_LIST.length)&&!confirm('Vider le jardin ?'))return;S.objects.forEach(function(o){scene.remove(o);});S.objects=[];instClearAll();deselect();updateCount();toast('Jardin vidé');}
+function newGarden(){if(S.objects.length&&!confirm('Nouveau jardin ?'))return;clearGarden();S.theme='Libre';switchTab('garden');toast('Nouveau jardin prêt');}
+
+document.addEventListener('DOMContentLoaded',function(){
+  buildPhotoSlots();onDims();
+  document.getElementById('tab-ia').addEventListener('click',function(){switchTab('ia');});
+  document.getElementById('tab-garden').addEventListener('click',function(){switchTab('garden');});
+  document.getElementById('tab-saves').addEventListener('click',function(){switchTab('saves');});
+});
+</script>
+
+<!-- BOTTOM DRAWER PANELS — outside any positioned ancestor -->
+<div class="panel" id="pIA">
+  <div class="panel-handle"></div>
+  <button class="panel-close" onclick="switchTab('garden')">✕</button>
+  <h2>Génération IA</h2>
+  <p>Choisissez un thème — généré selon vos dimensions et votre sol</p>
+  <div class="ia-soil-tag" id="ia-soil-tag">⭐ Plantes adaptées à votre sol</div>
+  <div class="themes-grid" id="themes-grid"></div>
+  <div class="ia-bar" id="ia-bar"><div class="spinner"></div><span id="ia-txt">Génération…</span></div>
+  <div id="ia-apply-wrap">
+    <button id="ia-apply-btn" onclick="applySelectedTheme()">✦ Appliquer <span class="apply-name" id="apply-label"></span></button>
+  </div>
+</div>
+<div class="panel" id="pSaves">
+  <div class="panel-handle"></div>
+  <button class="panel-close" onclick="switchTab('garden')">✕</button>
+  <h2>Mes projets</h2>
+  <p>Sauvegardez et rechargez vos créations</p>
+  <div class="sv-acts">
+    <button class="sv-btn-p" onclick="doSave()">+ Sauvegarder</button>
+    <button class="sv-btn-s" onclick="newGarden()">Nouveau jardin</button>
+  </div>
+  <div id="sv-list"></div>
+</div>
+</body>
+</html>
