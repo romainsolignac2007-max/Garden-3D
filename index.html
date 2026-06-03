@@ -2411,6 +2411,17 @@ function placeObj(type, x, z, sc, rot, callback){
   return obj;
 }
 
+// Précharge + prépare le modèle d'une espèce AVANT le placement.
+// Appelé dès la sélection dans la bibliothèque : au moment où l'utilisateur
+// clique pour poser, le vrai modèle est déjà prêt (plus de version « basique »
+// de secours qui apparaît sur les premières poses).
+function warmModel(type){
+  if(!type || !GLB_FILES[type] || INST[type]) return; // rien à faire / déjà prêt
+  loadGLBModel(type, function(group){
+    if(group && !INST[type]) instPrepare(type, group);
+  });
+}
+
 // ============================================================
 // === PALETTE ===
 // ============================================================
@@ -2688,6 +2699,7 @@ function buildPalette(){
           tile.classList.add('sel');
           tile.querySelector('.on').style.color='';
           toast('✅ '+p.name+' sélectionné');
+          warmModel(p.id); // précharge le vrai modèle 3D dès la sélection
         };
         gridDiv.appendChild(tile);
       });
