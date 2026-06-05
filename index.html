@@ -2394,6 +2394,11 @@ function placeObj(type, x, z, sc, rot, callback){
         scene.add(fb);S.objects.push(fb);updateCount();if(callback)callback(fb);return;
       }
       // 'group' est déjà normalisé (hauteur 1, base à Y=0) par loadGLBModel.
+      // Recentrer horizontalement (X/Z) pour que l'arbre se pose PILE sous le curseur
+      // (certains modèles ont leur point d'origine décalé sur le côté).
+      var _cb=new THREE.Box3().setFromObject(group);
+      group.position.x -= (_cb.min.x+_cb.max.x)*0.5;
+      group.position.z -= (_cb.min.z+_cb.max.z)*0.5;
       var hRange=TREE_HEIGHTS[type]||{min:3,max:6};
       var targetH=hRange.min+Math.random()*(hRange.max-hRange.min);
       var wrap=new THREE.Group();
