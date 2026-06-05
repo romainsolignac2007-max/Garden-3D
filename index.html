@@ -1163,6 +1163,10 @@ var PLANT_DB={
   'Arbres 🌳':[
     {id:'cypress',icon:'🌲',name:'Cyprès',sci:'Cupressus sempervirens',soils:['lime','sand','loam'],cat:'Arbres 🌳',h:[5,12],shape:'columnar',fc:[0x1a3d0f,0x22500f,0x142d0a],tc:0x4a2e10},
     {id:'olivier',icon:'🫒',name:'Olivier',sci:'Olea europaea',soils:['lime','sand','loam','clay'],cat:'Arbres 🌳',h:[3,6],shape:'tree_round',fc:[0x6b8e5a,0x556b2f,0x808000],tc:0x6b5842,realistic:true},
+    {id:'citronnier',icon:'🍋',name:'Citronnier',sci:'Citrus limon',soils:['loam','sand','lime','humus'],cat:'Arbres 🌳',h:[2.5,4],shape:'tree_round',fc:[0x4a7c2a,0x3a6020,0x88aa3a],tc:0x6b5230,realistic:true},
+  ],
+  'Cactus 🌵':[
+    {id:'cactus',icon:'🌵',name:'Cactus saguaro',sci:'Carnegiea gigantea',soils:['sand','lime'],cat:'Cactus 🌵',h:[2,5],shape:'columnar',fc:[0x4a7c3a,0x3a6030,0x5a8c4a],tc:0x3a6030,realistic:true},
   ]
 };
 
@@ -1612,7 +1616,9 @@ var TREE_HEIGHTS = {
   cypress:{min: 3.0, max: 6.0},
   bambou:{min: 2.75, max: 3.25},
   laurier:{min: 1.5, max: 2.5},
-  olivier:{min: 3.0, max: 5.0}
+  olivier:{min: 3.0, max: 5.0},
+  citronnier:{min: 2.5, max: 4.0},
+  cactus:{min: 2.0, max: 5.0}
 };
 
 // ============================================================
@@ -2831,6 +2837,11 @@ function buildPalette(){
 
   searchInput.addEventListener('input',function(){renderGrid();});
   renderGrid();
+  // Crédits des modèles 3D (licences libres CC-BY — attribution requise)
+  var cred=document.createElement('div');
+  cred.style.cssText='margin-top:12px;padding:8px 6px;font-size:8px;line-height:1.6;color:rgba(200,221,184,.32);text-align:center;border-top:.5px solid rgba(200,221,184,.08)';
+  cred.innerHTML='Modèles 3D : Olivier © massive-graphisme · Citronnier &amp; Cactus © PlantCatalog · Sketchfab (CC-BY)';
+  panel.appendChild(cred);
 }
 
 // === THÈMES IA ===
