@@ -1140,6 +1140,8 @@ function loadGLBModel(type, callback){
 // ============================================================
 var S={soil:'loam',dimL:10,dimW:8,photos:{},tool:'place',selType:'tree_pine',selObj:null,objects:[],theme:'Libre',saves:[]};
 try{S.saves=JSON.parse(localStorage.getItem('g3d_v3')||'[]');}catch(e){S.saves=[];}
+// Miniatures 3D générées automatiquement (mises en cache pour ne les calculer qu'une fois)
+var THUMBS={}; try{THUMBS=JSON.parse(localStorage.getItem('g3d_thumbs_v1')||'{}');}catch(e){THUMBS={};}
 
 var SOIL={
   clay:{name:'Argile',icon:'🟤',rec:['tree_round','flower','bush']},
@@ -2470,6 +2472,66 @@ function warmModel(type){
 // ============================================================
 // === PALETTE ===
 // ============================================================
+// ============================================================
+// === MINIATURES 3D AUTO (rendu hors écran, mis en cache) ===
+// ============================================================
+var _thumbRenderer=null;
+function _getThumbRenderer(){
+  if(_thumbRenderer) return _thumbRenderer;
+  try{
+    _thumbRenderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});
+    _thumbRenderer.setPixelRatio(1);
+    _thumbRenderer.setSize(160,160);
+    _thumbRenderer.setClearColor(0x000000,0);
+  }catch(e){ _thumbRenderer=null; }
+  return _thumbRenderer;
+}
+// Génère la miniature d'un type (rend le vrai modèle), renvoie un dataURL via cb (ou null).
+function genThumb(type, cb){
+  if(!GLB_FILES[type]){ if(cb)cb(null); return; }
+  loadGLBModel(type, function(group){
+    if(!group){ if(cb)cb(null); return; }
+    try{
+      var r=_getThumbRenderer(); if(!r){ if(cb)cb(null); return; }
+      var scn=new THREE.Scene();
+      scn.add(new THREE.AmbientLight(0xffffff,0.95));
+      var dl=new THREE.DirectionalLight(0xffffff,0.85); dl.position.set(3,5,4); scn.add(dl);
+      scn.add(group);
+      var box=new THREE.Box3().setFromObject(group);
+      var ctr=box.getCenter(new THREE.Vector3());
+      var size=box.getSize(new THREE.Vector3());
+      var maxd=Math.max(size.x,size.y,size.z)||1;
+      var cam=new THREE.PerspectiveCamera(35,1,0.01,1000);
+      var dist=maxd*2.0;
+      cam.position.set(ctr.x+dist*0.5, ctr.y+size.y*0.12+maxd*0.35, ctr.z+dist);
+      cam.lookAt(ctr.x, ctr.y, ctr.z);
+      r.render(scn,cam);
+      var url=r.domElement.toDataURL('image/png');
+      scn.remove(group);
+      if(cb)cb(url);
+    }catch(e){ console.warn('miniature échouée pour',type,e); if(cb)cb(null); }
+  });
+}
+// Génère, en arrière-plan et une par une, les miniatures manquantes ; met à jour les tuiles.
+function genAllThumbs(){
+  if(typeof GLB_FILES!=='object') return;
+  var ids=[]; for(var k in GLB_FILES){ if(!THUMBS[k]) ids.push(k); }
+  var i=0;
+  (function next(){
+    if(i>=ids.length) return;
+    var t=ids[i++];
+    genThumb(t,function(url){
+      if(url){
+        THUMBS[t]=url;
+        try{ localStorage.setItem('g3d_thumbs_v1',JSON.stringify(THUMBS)); }catch(e){}
+        var pd=document.getElementById('prev-'+t);
+        if(pd){ pd.innerHTML=''; var im=document.createElement('img'); im.src=url; im.style.cssText='width:100%;height:100%;object-fit:contain;display:block'; pd.appendChild(im); }
+      }
+      setTimeout(next, 250);
+    });
+  })();
+}
+
 function buildPalette(){
   var panel=document.getElementById('rpal-body');
   if(!panel)return;
@@ -2516,6 +2578,13 @@ function buildPalette(){
 
   // ── SVG ICON GENERATOR ────────────────────────────────────
   function makeSVGPreview(plant){
+    // Miniature 3D générée (rendu du vrai modèle) — prioritaire si disponible
+    if(THUMBS[plant.id]){
+      var tImg=document.createElement('img');
+      tImg.src=THUMBS[plant.id];
+      tImg.style.cssText='width:100%;height:100%;object-fit:contain;display:block';
+      return tImg;
+    }
     // Si une vraie photo existe pour cette plante, on l'utilise
     if(typeof PLANT_PHOTOS !== 'undefined' && PLANT_PHOTOS[plant.id]){
       var ns='http://www.w3.org/2000/svg';
@@ -2723,6 +2792,7 @@ function buildPalette(){
 
         var previewDiv=document.createElement('div');
         previewDiv.className='plant-preview';
+        previewDiv.id='prev-'+p.id;
         previewDiv.appendChild(makeSVGPreview(p));
         tile.appendChild(previewDiv);
 
@@ -2923,6 +2993,7 @@ function launchEditor(){
   document.getElementById('rpal-soil').textContent=sd.icon+' Sol '+sd.name.toLowerCase();
   if(!renderer){initThree();}else{rebuildGround();resetCam();}
   buildPalette();buildThemesUI();
+  setTimeout(genAllThumbs, 1500); // génère les miniatures 3D en arrière-plan (une seule fois, puis en cache)
   switchTab('garden');
   var msgs=['Création du terrain…','Génération de l\'herbe…','Éclairage en cours…','Finalisation…'],mi=0;
   var iv=setInterval(function(){if(mi<msgs.length)document.getElementById('ld-sub').textContent=msgs[mi++];else clearInterval(iv);},300);
