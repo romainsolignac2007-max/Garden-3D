@@ -6,6 +6,8 @@
 <title>Garden3D Pro</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- Lecteur GLTF OFFICIEL (gère les vraies textures) pour les modèles réalistes -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script>
 // ============================================================
 // GLTFLoader inline (Three.js r128 compatible subset)
@@ -243,7 +245,7 @@ _buildScene:function(json,onLoad,onError){
   onLoad({scene:scene,scenes:[scene],animations:[],cameras:[],asset:json.asset||{}});
 }
 };
-scope.GLTFLoader=GLTFLoader;
+scope.StylizedGLTFLoader=GLTFLoader; // lecteur "stylisé" maison (repeint vert/marron) — pour les arbres existants
 })();
 </script>
 <style>
@@ -644,6 +646,7 @@ var GLB_CACHE = {};  // type -> THREE.Group (cloned per instance)
 var GLB_LOADING = {}; // type -> array of callbacks waiting
 
 var GLB_FILES = {};  // id du sujet -> "models/<id>.glb" (rempli automatiquement depuis PLANT_DB)
+var REALISTIC = {};  // id -> true pour les modèles à VRAIES textures (lecteur officiel, sans instanciation)
 
 
 // Load a GLB model (cached). Returns via callback with a cloned Group.
@@ -665,7 +668,9 @@ function loadGLBModel(type, callback){
     return;
   }
   GLB_LOADING[type]=[callback];
-  var loader=new THREE.GLTFLoader();
+  // Modèles réalistes -> lecteur OFFICIEL (vraies textures). Autres -> lecteur stylisé maison.
+  var useReal = REALISTIC[type] && THREE.GLTFLoader;
+  var loader = useReal ? new THREE.GLTFLoader() : new THREE.StylizedGLTFLoader();
   loader.load(GLB_FILES[type],function(gltf){
     var group=gltf.scene;
 
@@ -1155,13 +1160,17 @@ var PLANT_DB={
   ],
   'Arbres 🌳':[
     {id:'cypress',icon:'🌲',name:'Cyprès',sci:'Cupressus sempervirens',soils:['lime','sand','loam'],cat:'Arbres 🌳',h:[5,12],shape:'columnar',fc:[0x1a3d0f,0x22500f,0x142d0a],tc:0x4a2e10},
+    {id:'olivier',icon:'🫒',name:'Olivier',sci:'Olea europaea',soils:['lime','sand','loam','clay'],cat:'Arbres 🌳',h:[3,6],shape:'tree_round',fc:[0x6b8e5a,0x556b2f,0x808000],tc:0x6b5842,realistic:true},
   ]
 };
 
 // Chaque sujet du catalogue charge models/<id>.glb a la demande (plus de base64 embarque).
 // Pour ajouter un sujet (ex: pommier): deposer models/pommier.glb + une ligne dans PLANT_DB ci-dessus.
 for(var _gk in PLANT_DB){
-  PLANT_DB[_gk].forEach(function(p){ GLB_FILES[p.id]='models/'+p.id+'.glb'; });
+  PLANT_DB[_gk].forEach(function(p){
+    GLB_FILES[p.id]='models/'+p.id+'.glb';
+    if(p.realistic) REALISTIC[p.id]=true; // modèle à vraies textures
+  });
 }
 
 // Build legacy CAT from PLANT_DB for backward compat
@@ -1600,7 +1609,8 @@ var TREE_HEIGHTS = {
   washingtonia2:{min: 3.5, max: 4.0},
   cypress:{min: 3.0, max: 6.0},
   bambou:{min: 2.75, max: 3.25},
-  laurier:{min: 1.5, max: 2.5}
+  laurier:{min: 1.5, max: 2.5},
+  olivier:{min: 3.0, max: 5.0}
 };
 
 // ============================================================
@@ -2198,7 +2208,7 @@ function doHL(obj,on){obj.traverse(function(m){if(!m.isMesh)return;if(on){m.mate
 function updScale(v){
   var val=parseFloat(v);
   if(INST_SEL){INST_SEL.sc=val;var pool=INST[INST_SEL.type];instUpdateMatrix(pool,INST_SEL.idx);pool.mesh.instanceMatrix.needsUpdate=true;document.getElementById('cv-scale').textContent=val.toFixed(1)+'×';return;}
-  if(!S.selObj)return;S.selObj.userData.sc=val;S.selObj.scale.setScalar(val);document.getElementById('cv-scale').textContent=val.toFixed(1)+'×';
+  if(!S.selObj)return;S.selObj.userData.sc=val;S.selObj.scale.setScalar(val*(S.selObj.userData.baseScale||1));document.getElementById('cv-scale').textContent=val.toFixed(1)+'×';
 }
 function updRot(v){
   var deg=parseInt(v),rad=deg*Math.PI/180;
@@ -2372,8 +2382,36 @@ function placeObj(type, x, z, sc, rot, callback){
   sc = sc || 1;
   rot = rot || 0;
 
-  // Sujets 3D du catalogue — INSTANCED MESH (1 draw call par espèce = 60 FPS à 300+ plantes)
-  if(GLB_FILES[type]){
+  // Modèles RÉALISTES (vraies textures) — placés comme objets normaux (pas d'instanciation
+  // car plusieurs matériaux : feuilles transparentes + écorce). Sélection/taille/suppression
+  // passent par le même circuit que les objets procéduraux (S.objects).
+  if(GLB_FILES[type] && REALISTIC[type]){
+    loadGLBModel(type, function(group){
+      if(!group){ // échec de chargement -> secours procédural
+        var fb=buildObj(type);var b=new THREE.Box3().setFromObject(fb);
+        fb.position.set(x,-b.min.y,z);fb.scale.setScalar(sc);fb.rotation.y=rot;
+        fb.userData.type=type;fb.userData.sc=sc;fb.userData.rot=rot;
+        scene.add(fb);S.objects.push(fb);updateCount();if(callback)callback(fb);return;
+      }
+      // 'group' est déjà normalisé (hauteur 1, base à Y=0) par loadGLBModel.
+      var hRange=TREE_HEIGHTS[type]||{min:3,max:6};
+      var targetH=hRange.min+Math.random()*(hRange.max-hRange.min);
+      var wrap=new THREE.Group();
+      wrap.add(group);
+      wrap.position.set(x,0,z);
+      wrap.userData.baseScale=targetH;        // hauteur réelle de base
+      wrap.scale.setScalar((sc||1)*targetH);  // taille = (curseur) × hauteur réelle
+      wrap.rotation.y=rot||0;
+      wrap.userData.type=type;wrap.userData.sc=sc||1;wrap.userData.rot=rot||0;wrap.userData.groundOffset=0;
+      wrap.traverse(function(o){if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+      scene.add(wrap);S.objects.push(wrap);updateCount();
+      if(callback)callback(wrap);
+    });
+    return;
+  }
+
+  // Sujets 3D stylisés — INSTANCED MESH (1 draw call par espèce = 60 FPS à 300+ plantes)
+  if(GLB_FILES[type] && !REALISTIC[type]){
     // Ensure pool is prepared (async on first call, then cached)
     if(!INST[type]){
       loadGLBModel(type, function(glbGroup){
@@ -2416,7 +2454,9 @@ function placeObj(type, x, z, sc, rot, callback){
 // clique pour poser, le vrai modèle est déjà prêt (plus de version « basique »
 // de secours qui apparaît sur les premières poses).
 function warmModel(type){
-  if(!type || !GLB_FILES[type] || INST[type]) return; // rien à faire / déjà prêt
+  if(!type || !GLB_FILES[type]) return;
+  if(REALISTIC[type]){ loadGLBModel(type, function(){}); return; } // réaliste : juste précharger en cache
+  if(INST[type]) return; // pool stylisé déjà prêt
   loadGLBModel(type, function(group){
     if(group && !INST[type]) instPrepare(type, group);
   });
